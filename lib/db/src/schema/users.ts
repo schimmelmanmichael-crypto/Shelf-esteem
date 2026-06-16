@@ -1,0 +1,27 @@
+import { pgTable, text, timestamp, boolean, integer } from 'drizzle-orm/pg-core';
+
+export const usersTable = pgTable('users', {
+  id: text('id').primaryKey(),
+  clerkId: text('clerk_id').unique().notNull(),
+  email: text('email').notNull(),
+  displayName: text('display_name'),
+  plan: text('plan').default('free'),
+  trialStartedAt: timestamp('trial_started_at'),
+  trialEndsAt: timestamp('trial_ends_at'),
+  stripeCustomerId: text('stripe_customer_id'),
+  stripeSubscriptionId: text('stripe_subscription_id'),
+  referralCode: text('referral_code').unique(),
+  referredBy: text('referred_by'),
+  shelfScore: integer('shelf_score').default(0),
+  savingsScore: integer('savings_score').default(0),
+  wasteScore: integer('waste_score').default(0),
+  shelfStreak: integer('shelf_streak').default(0),
+  lastActiveAt: timestamp('last_active_at'),
+  welcomeEmailSent: boolean('welcome_email_sent').default(false),
+  day7EmailSent: boolean('day7_email_sent').default(false),
+  day14EmailSent: boolean('day14_email_sent').default(false),
+  householdId: text('household_id'),
+  isDemoActive: boolean('is_demo_active').default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});

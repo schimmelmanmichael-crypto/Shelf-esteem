@@ -1,0 +1,13 @@
+{
+  "name": "shelf-esteem",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --build",
+    "build": "pnpm --filter @workspace/db run build && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/pantry-app run build",
+    "dev:api": "pnpm --filter @workspace/api-server run dev",
+    "dev:app": "pnpm --filter @workspace/pantry-app run dev"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
+  }
+}

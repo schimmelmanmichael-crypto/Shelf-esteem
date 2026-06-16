@@ -1,0 +1,6 @@
+packages:
+  - 'lib/*'
+  - 'artifacts/*'
+allowBuilds:
+  '@clerk/shared': true
+  esbuild: true

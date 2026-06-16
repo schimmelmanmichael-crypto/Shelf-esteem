@@ -1,0 +1,48 @@
+import { Router } from 'express';
+import health         from './health.js';
+import pantry         from './pantry.js';
+import recipes        from './recipes.js';
+import shopping       from './shopping.js';
+import mealPlan       from './mealPlan.js';
+import leftovers      from './leftovers.js';
+import receipts       from './receipts.js';
+import receiptParse   from './receiptParse.js';
+import weeklyAds      from './weeklyAds.js';
+import weeklyAdParse  from './weeklyAdParse.js';
+import deals          from './deals.js';
+import priceAlerts    from './priceAlerts.js';
+import spending       from './spending.js';
+import community      from './community.js';
+import billing        from './billing.js';
+import referral       from './referral.js';
+import admin          from './admin.js';
+import household      from './household.js';
+import receiptCodeMap from './receiptCodeMap.js';
+import dataReset      from './dataReset.js';
+import demo           from './demo.js';
+
+const router: Router = Router();
+
+router.use('/healthz',          health);
+router.use('/pantry',           pantry);
+router.use('/recipes',          recipes);
+router.use('/shopping',         shopping);
+router.use('/meal-plan',        mealPlan);
+router.use('/leftovers',        leftovers);
+router.use('/receipts',         receipts);
+router.use('/receipts/parse',   receiptParse);
+router.use('/weekly-ads',       weeklyAds);
+router.use('/weekly-ads/parse', weeklyAdParse);
+router.use('/deals',            deals);
+router.use('/price-alerts',     priceAlerts);
+router.use('/spending',         spending);
+router.use('/community',        community);
+router.use('/billing',          billing);
+router.use('/referral',         referral);
+router.use('/admin',            admin);
+router.use('/household',        household);
+router.use('/receipt-code-map', receiptCodeMap);
+router.use('/data',             dataReset);
+router.use('/demo',             demo);
+
+export default router;

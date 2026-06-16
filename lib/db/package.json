@@ -1,0 +1,26 @@
+{
+  "name": "@workspace/db",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts"
+  },
+  "scripts": {
+    "push": "drizzle-kit push",
+    "studio": "drizzle-kit studio",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "drizzle-kit": "^0.31.1",
+    "drizzle-zod": "^0.7.0",
+    "typescript": "~5.9.3",
+    "zod": "3.25.76"
+  }
+}
