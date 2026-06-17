@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["nodejs_22"]
+
+[phases.install]
+cmds = ["npm install -g pnpm", "pnpm install --filter @workspace/pantry-app"]
+
+[phases.build]
+cmds = ["pnpm --filter @workspace/pantry-app run build"]
+
+[start]
+cmd = "npx serve -s artifacts/pantry-app/dist -l ${PORT:-8082}"
