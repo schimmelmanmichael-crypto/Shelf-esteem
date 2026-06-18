@@ -1,7 +1,7 @@
 {
   "name": "shelf-esteem",
   "private": true,
-  "packageManager": "pnpm@11.7.0",
+  "packageManager": "pnpm@9.0.0",
   "scripts": {
     "typecheck": "tsc --build",
     "build": "pnpm --filter @workspace/db run build && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/pantry-app run build",
