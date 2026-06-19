@@ -3,19 +3,27 @@ import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 import { logger } from './logger.js';
 
-const DEMO_PANTRY = [
-  { name: 'Chicken Breast', category: 'proteins', unit: 'lb', quantity: '2', storageArea: 'fridge', expiryDate: '2026-06-20' },
-  { name: 'Brown Rice', category: 'grains', unit: 'cup', quantity: '3', storageArea: 'pantry' },
-  { name: 'Broccoli', category: 'produce', unit: 'count', quantity: '1', storageArea: 'fridge', expiryDate: '2026-06-18' },
-  { name: 'Olive Oil', category: 'other', unit: 'fl_oz', quantity: '16', storageArea: 'pantry' },
-  { name: 'Garlic', category: 'produce', unit: 'count', quantity: '5', storageArea: 'pantry' },
-  { name: 'Canned Tomatoes', category: 'canned', unit: 'count', quantity: '3', storageArea: 'pantry' },
-  { name: 'Pasta', category: 'grains', unit: 'oz', quantity: '16', storageArea: 'pantry' },
-  { name: 'Parmesan', category: 'dairy', unit: 'oz', quantity: '4', storageArea: 'fridge' },
-];
+function daysFromNow(offset: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function buildDemoPantry() {
+  return [
+    { name: 'Chicken Breast', category: 'proteins', unit: 'lb', quantity: '2', storageArea: 'fridge', expiryDate: daysFromNow(2) },
+    { name: 'Brown Rice', category: 'grains', unit: 'cup', quantity: '3', storageArea: 'pantry' },
+    { name: 'Broccoli', category: 'produce', unit: 'count', quantity: '1', storageArea: 'fridge', expiryDate: daysFromNow(-1) },
+    { name: 'Olive Oil', category: 'other', unit: 'fl_oz', quantity: '16', storageArea: 'pantry' },
+    { name: 'Garlic', category: 'produce', unit: 'count', quantity: '5', storageArea: 'pantry' },
+    { name: 'Canned Tomatoes', category: 'canned', unit: 'count', quantity: '3', storageArea: 'pantry' },
+    { name: 'Pasta', category: 'grains', unit: 'oz', quantity: '16', storageArea: 'pantry' },
+    { name: 'Parmesan', category: 'dairy', unit: 'oz', quantity: '4', storageArea: 'fridge' },
+  ];
+}
 
 export async function activateDemo(userId: string): Promise<void> {
-  for (const item of DEMO_PANTRY) {
+  for (const item of buildDemoPantry()) {
     await db.insert(pantryItemsTable).values({
       id: crypto.randomUUID(),
       userId,
