@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "node ./lib/db/dist/index.js",
+    "startCommand": "pnpm --filter @workspace/db run push",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
