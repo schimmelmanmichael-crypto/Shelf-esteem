@@ -56,16 +56,13 @@ function HomeRedirect() {
 
 export default function App() {
   const pk = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
-  const isSatellite = import.meta.env.VITE_CLERK_IS_SATELLITE === 'true';
-  const domain = import.meta.env.VITE_CLERK_DOMAIN as string | undefined;
 
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
       {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       <ClerkProvider
         publishableKey={pk}
-        isSatellite={isSatellite}
-        domain={domain}
+        proxyUrl="/api/__clerk"
         {...{ clerkJSUrl: import.meta.env.VITE_CLERK_PROXY_URL ?? '/api/__clerk' } as any}
         routerPush={(to) => window.history.pushState({}, '', to)}
         routerReplace={(to) => window.history.replaceState({}, '', to)}

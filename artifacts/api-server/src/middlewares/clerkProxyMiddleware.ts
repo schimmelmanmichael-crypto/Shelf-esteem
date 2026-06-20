@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 
 export function clerkProxyMiddleware() {
   return async (req: Request, res: Response): Promise<void> => {
-    const clerkUrl = `https://known-mustang-67.clerk.accounts.dev${req.path}`;
+    const clerkUrl = `https://known-mustang-67.clerk.accounts.dev${req.url}`;
     try {
       const proxyRes = await fetch(clerkUrl, {
         method: req.method,
@@ -15,7 +15,11 @@ export function clerkProxyMiddleware() {
       });
 
       res.status(proxyRes.status);
-      proxyRes.headers.forEach((value, key) => res.setHeader(key, value));
+      proxyRes.headers.forEach((value, key) => {
+        if (key.toLowerCase() !== 'set-cookie') res.setHeader(key, value);
+      });
+      const setCookie = proxyRes.headers.getSetCookie();
+      if (setCookie.length > 0) res.setHeader('set-cookie', setCookie);
       const text = await proxyRes.text();
       res.send(text);
     } catch {
