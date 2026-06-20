@@ -17,4 +17,8 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    outDir: path.resolve(__dirname, '../api-server/public'),
+    emptyOutDir: true,
+  },
 });

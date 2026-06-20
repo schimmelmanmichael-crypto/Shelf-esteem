@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-node/
+artifacts/api-server/public/
 .env
 *.env.local
 .DS_Store
