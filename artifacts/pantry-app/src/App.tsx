@@ -59,11 +59,8 @@ export default function App() {
 
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       <ClerkProvider
         publishableKey={pk}
-        proxyUrl="/api/__clerk"
-        {...{ clerkJSUrl: import.meta.env.VITE_CLERK_PROXY_URL ?? '/api/__clerk' } as any}
         routerPush={(to) => window.history.pushState({}, '', to)}
         routerReplace={(to) => window.history.replaceState({}, '', to)}
       >

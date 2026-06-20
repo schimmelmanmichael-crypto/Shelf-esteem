@@ -4,10 +4,7 @@ import { fileURLToPath } from 'url';
 import { clerkMiddleware } from '@clerk/express';
 import pinoHttp from 'pino-http';
 import { logger } from './lib/logger.js';
-import { clerkProxyMiddleware } from './middlewares/clerkProxyMiddleware.js';
 import routes from './routes/index.js';
-
-export const CLERK_PROXY_PATH = '/api/__clerk';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = path.join(__dirname, '../public');
@@ -22,9 +19,6 @@ export function createApp(): express.Application {
   app.use((pinoHttp as any)({ logger }));
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
-
-  // Clerk same-origin proxy
-  app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
 
   // Clerk middleware (verifies JWTs on all requests)
   app.use(clerkMiddleware());
