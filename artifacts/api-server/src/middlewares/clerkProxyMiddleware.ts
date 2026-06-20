@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 
 export function clerkProxyMiddleware() {
   return async (req: Request, res: Response): Promise<void> => {
-    const clerkUrl = `https://clerk.shelfesteem.app${req.path}`;
+    const clerkUrl = `https://known-mustang-67.clerk.accounts.dev${req.path}`;
     try {
       const proxyRes = await fetch(clerkUrl, {
         method: req.method,
