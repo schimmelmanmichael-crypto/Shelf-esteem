@@ -5,6 +5,21 @@ import { requireAuth } from '../middlewares/requireAuth.js';
 import { lookupBarcode } from '../lib/barcodeService.js';
 import { serialize } from '../lib/serialize.js';
 import crypto from 'crypto';
+import { z } from 'zod';
+
+// Zod schema for POST /pantry — only these fields are allowed into the DB
+const pantryPostSchema = z.object({
+  name:          z.string().min(1),                // required
+  quantity:      z.number().optional().transform(v => v?.toString()),
+  unit:          z.string().optional(),
+  brand:         z.string().optional(),
+  category:      z.string().optional(),
+  storageArea:   z.string().optional(),
+  expiryDate:    z.string().optional(),
+  notes:         z.string().optional(),
+  purchasePrice: z.number().optional().transform(v => v?.toString()),
+  purchaseStore: z.string().optional(),
+});
 
 const router: Router = Router();
 
@@ -29,12 +44,25 @@ router.get('/summary', requireAuth, async (req, res): Promise<void> => {
 });
 
 router.post('/', requireAuth, async (req, res): Promise<void> => {
-  const item = await db.insert(pantryItemsTable).values({
-    id: crypto.randomUUID(),
-    userId: req.userId,
-    ...req.body,
-  }).returning();
-  res.json(serialize(item[0]));
+  // Validate req.body — reject unknown fields automatically (Zod strips them)
+  const parsed = pantryPostSchema.safeParse(req.body);
+  if (!parsed.success) {
+    // Return which fields failed and why, so the client can surface them
+    res.status(400).json({ error: 'Validation failed', fields: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
+  try {
+    const item = await db.insert(pantryItemsTable).values({
+      id: crypto.randomUUID(),
+      userId: req.userId,
+      ...parsed.data, // only whitelisted, validated fields
+    }).returning();
+    res.json(serialize(item[0]));
+  } catch {
+    // Never leak DB internals to the client
+    res.status(500).json({ error: 'Failed to save pantry item' });
+  }
   return;
 });
 

@@ -3,6 +3,7 @@ import { pgTable, text, timestamp, integer, boolean } from 'drizzle-orm/pg-core'
 export const mealPlansTable = pgTable('meal_plans', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
+  householdId: text('household_id'),
   date: text('date').notNull(),
   mealSlot: text('meal_slot').notNull(),
   mealType: text('meal_type').default('recipe'),

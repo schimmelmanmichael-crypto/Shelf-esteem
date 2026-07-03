@@ -3,6 +3,7 @@ import { pgTable, text, timestamp, integer, decimal } from 'drizzle-orm/pg-core'
 export const leftoversTable = pgTable('leftovers', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
+  householdId: text('household_id'),
   mealName: text('meal_name').notNull(),
   recipeId: text('recipe_id'),
   servingsAvailable: integer('servings_available').default(0),
@@ -19,6 +20,7 @@ export const leftoversTable = pgTable('leftovers', {
 export const missedOpportunitiesTable = pgTable('missed_opportunities', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
+  householdId: text('household_id'),
   leftoverId: text('leftover_id'),
   mealName: text('meal_name').notNull(),
   servingsLost: integer('servings_lost').default(0),

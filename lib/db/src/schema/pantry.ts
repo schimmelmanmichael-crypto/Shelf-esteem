@@ -3,6 +3,7 @@ import { pgTable, text, timestamp, integer, decimal } from 'drizzle-orm/pg-core'
 export const pantryItemsTable = pgTable('pantry_items', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
+  householdId: text('household_id'),
   name: text('name').notNull(),
   brand: text('brand'),
   barcode: text('barcode'),
