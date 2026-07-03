@@ -4,6 +4,8 @@ import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { serialize } from '../lib/serialize.js';
 import { logger } from '../lib/logger.js';
+import { getOrCreateHouseholdId } from '../lib/household.js';
+import { recordPantryEvent } from '../lib/pantryEvents.js';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 
@@ -58,12 +60,14 @@ router.post('/purchase', requireAuth, async (req, res): Promise<void> => {
     items: Array<{ id: string; name: string; quantity: string; unit: string; price?: string }>;
   };
 
+  const householdId = await getOrCreateHouseholdId(req.userId);
   const receiptId = crypto.randomUUID();
   const total = items.reduce((sum, i) => sum + Number(i.price ?? 0), 0);
 
   await db.insert(receiptsTable).values({
     id: receiptId,
     userId: req.userId,
+    householdId,
     storeName,
     purchaseDate,
     total: total.toString(),
@@ -72,14 +76,36 @@ router.post('/purchase', requireAuth, async (req, res): Promise<void> => {
   });
 
   for (const item of items) {
-    await db.insert(pantryItemsTable).values({
-      id: crypto.randomUUID(),
-      userId: req.userId,
-      name: item.name,
-      quantity: item.quantity ?? '1',
-      unit: item.unit ?? 'count',
-      purchaseStore: storeName,
-    }).onConflictDoNothing();
+    const itemId = crypto.randomUUID();
+
+    await db.transaction(async (tx) => {
+      await tx.insert(pantryItemsTable).values({
+        id: itemId,
+        userId: req.userId,
+        householdId,
+        name: item.name,
+        quantity: item.quantity ?? '1',
+        unit: item.unit ?? 'count',
+        purchaseStore: storeName,
+      }).onConflictDoNothing();
+
+      // RC2 canon §3.2 — a shopping-list purchase adds food to pantry via an Acquire event.
+      await recordPantryEvent({
+        tx,
+        householdId,
+        pantryItemId: itemId,
+        eventType: 'acquire',
+        quantityDelta: parseFloat(item.quantity ?? '1'),
+        unit: item.unit ?? 'count',
+        source: 'shopping_purchase',
+        // Placeholder key — receiptId is freshly minted per request, not a stable
+        // client-supplied id, so this can't detect a duplicate submit yet either
+        // (same limitation as the manual pantry-add path — ticket 4 territory).
+        idempotencyKey: crypto.randomUUID(),
+        createdByUserAccountId: req.userId,
+        metadata: { source_type: 'shopping_purchase', receipt_id: receiptId },
+      });
+    });
 
     await db.delete(shoppingItemsTable).where(
       and(eq(shoppingItemsTable.id, item.id), eq(shoppingItemsTable.userId, req.userId))

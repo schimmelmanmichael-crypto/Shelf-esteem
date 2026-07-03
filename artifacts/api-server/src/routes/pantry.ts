@@ -4,6 +4,10 @@ import { eq, and, like, or } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { lookupBarcode } from '../lib/barcodeService.js';
 import { serialize } from '../lib/serialize.js';
+import { getOrCreateHouseholdId } from '../lib/household.js';
+import { recordPantryEvent } from '../lib/pantryEvents.js';
+import { PANTRY_EVENT_REASON_CODES } from '@workspace/db';
+import type { PantryEventReasonCode } from '@workspace/db';
 import crypto from 'crypto';
 import { z } from 'zod';
 
@@ -20,6 +24,9 @@ const pantryPostSchema = z.object({
   purchasePrice: z.number().optional().transform(v => v?.toString()),
   purchaseStore: z.string().optional(),
 });
+
+// Zod schema for PATCH /pantry/:id — same whitelist as POST, every field optional
+const pantryPatchSchema = pantryPostSchema.partial();
 
 const router: Router = Router();
 
@@ -53,12 +60,36 @@ router.post('/', requireAuth, async (req, res): Promise<void> => {
   }
 
   try {
-    const item = await db.insert(pantryItemsTable).values({
-      id: crypto.randomUUID(),
-      userId: req.userId,
-      ...parsed.data, // only whitelisted, validated fields
-    }).returning();
-    res.json(serialize(item[0]));
+    const householdId = await getOrCreateHouseholdId(req.userId);
+    const itemId = crypto.randomUUID();
+
+    const item = await db.transaction(async (tx) => {
+      const [inserted] = await tx.insert(pantryItemsTable).values({
+        id: itemId,
+        userId: req.userId,
+        householdId,
+        ...parsed.data, // only whitelisted, validated fields
+      }).returning();
+
+      // RC2 canon §3.2 — manual pantry add is an Acquire event.
+      await recordPantryEvent({
+        tx,
+        householdId,
+        pantryItemId: itemId,
+        eventType: 'acquire',
+        quantityDelta: parseFloat(parsed.data.quantity ?? '0'),
+        unit: parsed.data.unit ?? 'count',
+        source: 'manual',
+        // Placeholder key — ticket 4 wires up real client-supplied idempotency keys + conflict validation.
+        idempotencyKey: crypto.randomUUID(),
+        createdByUserAccountId: req.userId,
+        metadata: { source_type: 'manual' },
+      });
+
+      return inserted;
+    });
+
+    res.json(serialize(item));
   } catch {
     // Never leak DB internals to the client
     res.status(500).json({ error: 'Failed to save pantry item' });
@@ -68,20 +99,115 @@ router.post('/', requireAuth, async (req, res): Promise<void> => {
 
 router.patch('/:id', requireAuth, async (req, res): Promise<void> => {
   const id = req.params['id'] as string;
-  const [updated] = await db
-    .update(pantryItemsTable)
-    .set({ ...req.body, updatedAt: new Date() })
+
+  const parsed = pantryPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', fields: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
+  const [before] = await db
+    .select()
+    .from(pantryItemsTable)
     .where(and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId)))
-    .returning();
+    .limit(1);
+
+  if (!before) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+
+  const householdId = before.householdId ?? await getOrCreateHouseholdId(req.userId);
+
+  // RC2 canon §11.1 reason_code, chosen by field priority since a PATCH may
+  // touch several fields at once: quantity > storage location > freshness > generic.
+  let reasonCode: PantryEventReasonCode = 'user_correction';
+  if (parsed.data.quantity !== undefined) reasonCode = 'quantity_adjustment';
+  else if (parsed.data.storageArea !== undefined) reasonCode = 'location_change';
+  else if (parsed.data.expiryDate !== undefined) reasonCode = 'freshness_override';
+
+  const oldQty = parseFloat(before.quantity?.toString() ?? '0');
+  const newQty = parsed.data.quantity !== undefined ? parseFloat(parsed.data.quantity) : oldQty;
+
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(pantryItemsTable)
+      .set({ ...parsed.data, householdId, updatedAt: new Date() })
+      .where(and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId)))
+      .returning();
+
+    // RC2 canon §3.2/§11.8 — a manual PATCH is a Reconcile event.
+    await recordPantryEvent({
+      tx,
+      householdId,
+      pantryItemId: id,
+      eventType: 'reconcile',
+      quantityDelta: newQty - oldQty,
+      unit: parsed.data.unit ?? before.unit ?? 'count',
+      source: 'manual_correction',
+      idempotencyKey: crypto.randomUUID(),
+      createdByUserAccountId: req.userId,
+      reasonCode,
+      metadata: {
+        source_type: 'manual_correction',
+        actor_type: 'user',
+        reason_code: reasonCode,
+        actor: req.userId,
+        prior_state_snapshot: before,
+        corrected_state_snapshot: parsed.data,
+        notes: null,
+      },
+    });
+
+    return row;
+  });
+
   res.json(serialize(updated));
   return;
 });
 
 router.delete('/:id', requireAuth, async (req, res): Promise<void> => {
   const id = req.params['id'] as string;
-  await db.delete(pantryItemsTable).where(
-    and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId))
-  );
+
+  // Optional forward-compat override — client doesn't send this today, defaults to 'unknown'.
+  const reasonParse = z.enum([...PANTRY_EVENT_REASON_CODES]).optional().safeParse(req.query['reason']);
+  const reasonCode: PantryEventReasonCode = reasonParse.success && reasonParse.data ? reasonParse.data : 'unknown';
+
+  const [before] = await db
+    .select()
+    .from(pantryItemsTable)
+    .where(and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId)))
+    .limit(1);
+
+  if (!before) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+
+  const householdId = before.householdId ?? await getOrCreateHouseholdId(req.userId);
+  const remainingQty = parseFloat(before.quantity?.toString() ?? '0');
+
+  await db.transaction(async (tx) => {
+    await tx.delete(pantryItemsTable).where(
+      and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId))
+    );
+
+    // RC2 canon §3.2 — manual delete is a Discard event.
+    await recordPantryEvent({
+      tx,
+      householdId,
+      pantryItemId: id,
+      eventType: 'discard',
+      quantityDelta: -remainingQty,
+      unit: before.unit ?? 'count',
+      source: 'manual',
+      idempotencyKey: crypto.randomUUID(),
+      createdByUserAccountId: req.userId,
+      reasonCode,
+      metadata: { source_type: 'manual', reason_code: reasonCode },
+    });
+  });
+
   res.json({ ok: true });
   return;
 });

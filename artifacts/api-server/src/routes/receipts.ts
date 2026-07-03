@@ -3,6 +3,8 @@ import { db, receiptsTable, receiptItemsTable, pantryItemsTable } from '@workspa
 import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { serialize } from '../lib/serialize.js';
+import { getOrCreateHouseholdId } from '../lib/household.js';
+import { recordPantryEvent } from '../lib/pantryEvents.js';
 import crypto from 'crypto';
 
 const router: Router = Router();
@@ -65,15 +67,39 @@ router.post('/:id/confirm', requireAuth, async (req, res): Promise<void> => {
   const items = await db.select().from(receiptItemsTable).where(eq(receiptItemsTable.receiptId, id));
 
   if (addToPantry) {
+    const householdId = await getOrCreateHouseholdId(req.userId);
+
     for (const item of items) {
-      await db.insert(pantryItemsTable).values({
-        id: crypto.randomUUID(),
-        userId: req.userId,
-        name: item.name,
-        quantity: item.quantity?.toString() ?? '1',
-        unit: item.unit ?? 'count',
-        category: item.category,
-      }).onConflictDoNothing();
+      const itemId = crypto.randomUUID();
+      const quantity = item.quantity?.toString() ?? '1';
+
+      await db.transaction(async (tx) => {
+        await tx.insert(pantryItemsTable).values({
+          id: itemId,
+          userId: req.userId,
+          householdId,
+          name: item.name,
+          quantity,
+          unit: item.unit ?? 'count',
+          category: item.category,
+        }).onConflictDoNothing();
+
+        // RC2 canon §3.2 — receipt confirm adds food to pantry via an Acquire event.
+        await recordPantryEvent({
+          tx,
+          householdId,
+          pantryItemId: itemId,
+          eventType: 'acquire',
+          quantityDelta: parseFloat(quantity),
+          unit: item.unit ?? 'count',
+          source: 'receipt_confirm',
+          // Deterministic per (receipt, receipt item) — a genuine retry of the
+          // same confirm reproduces the same key instead of double-acquiring.
+          idempotencyKey: `${id}:${item.id}`,
+          createdByUserAccountId: req.userId,
+          metadata: { source_type: 'receipt_confirm', receipt_item_id: item.id },
+        });
+      });
 
       await db.update(receiptItemsTable)
         .set({ addedToPantry: 'yes' })

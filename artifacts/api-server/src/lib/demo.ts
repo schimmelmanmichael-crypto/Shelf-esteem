@@ -1,7 +1,9 @@
-import { db, pantryItemsTable, recipesTable, shoppingItemsTable } from '@workspace/db';
+import { db, pantryItemsTable, pantryEventsTable, recipesTable, shoppingItemsTable } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 import { logger } from './logger.js';
+import { getOrCreateHouseholdId } from './household.js';
+import { recordPantryEvent } from './pantryEvents.js';
 
 function daysFromNow(offset: number): string {
   const date = new Date();
@@ -23,11 +25,32 @@ function buildDemoPantry() {
 }
 
 export async function activateDemo(userId: string): Promise<void> {
+  const householdId = await getOrCreateHouseholdId(userId);
+
   for (const item of buildDemoPantry()) {
-    await db.insert(pantryItemsTable).values({
-      id: crypto.randomUUID(),
-      userId,
-      ...item,
+    const itemId = crypto.randomUUID();
+
+    await db.transaction(async (tx) => {
+      await tx.insert(pantryItemsTable).values({
+        id: itemId,
+        userId,
+        householdId,
+        ...item,
+      });
+
+      // RC2 canon §3.2 — demo seeding adds food to pantry via an Acquire event.
+      await recordPantryEvent({
+        tx,
+        householdId,
+        pantryItemId: itemId,
+        eventType: 'acquire',
+        quantityDelta: parseFloat(item.quantity),
+        unit: item.unit,
+        source: 'demo_seed',
+        idempotencyKey: crypto.randomUUID(),
+        createdByUserAccountId: userId,
+        metadata: { source_type: 'demo_seed' },
+      });
     });
   }
   logger.info({ userId }, 'Demo activated');
@@ -35,6 +58,12 @@ export async function activateDemo(userId: string): Promise<void> {
 
 export async function restoreFromDemo(userId: string): Promise<void> {
   await db.delete(pantryItemsTable).where(eq(pantryItemsTable.userId, userId));
+  // Same precedent as dataReset.ts: demo data is throwaway, so exiting demo
+  // mode also clears this user's pantry_events rather than leaving orphaned
+  // fake-acquisition history with no matching current-state row. Matches this
+  // function's existing scope exactly (it already unconditionally wipes all
+  // of this user's pantry_items/shopping_items, demo-sourced or not).
+  await db.delete(pantryEventsTable).where(eq(pantryEventsTable.createdByUserAccountId, userId));
   await db.delete(shoppingItemsTable).where(eq(shoppingItemsTable.userId, userId));
   logger.info({ userId }, 'Demo restored (data cleared)');
 }

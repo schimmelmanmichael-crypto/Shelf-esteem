@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   db,
   pantryItemsTable,
+  pantryEventsTable,
   shoppingItemsTable,
   mealPlansTable,
   leftoversTable,
@@ -25,6 +26,12 @@ router.post('/reset', requireAuth, async (req, res): Promise<void> => {
 
   try {
     await db.delete(pantryItemsTable).where(eq(pantryItemsTable.userId, uid));
+    // pantry_events has no userId column (RC2 canon models it as household-owned) —
+    // scoped by createdByUserAccountId to match this route's existing per-user
+    // (not per-household) reset granularity. Chosen per explicit approval: this
+    // is a full user-facing "reset my data" action, so it also erases event
+    // history for this user, overriding canon §3.3's normal immutability rule.
+    await db.delete(pantryEventsTable).where(eq(pantryEventsTable.createdByUserAccountId, uid));
     await db.delete(shoppingItemsTable).where(eq(shoppingItemsTable.userId, uid));
     await db.delete(mealPlansTable).where(eq(mealPlansTable.userId, uid));
     await db.delete(leftoversTable).where(eq(leftoversTable.userId, uid));

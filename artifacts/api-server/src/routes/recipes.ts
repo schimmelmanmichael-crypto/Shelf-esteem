@@ -4,6 +4,7 @@ import { eq, and, or, isNull } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { applyPantryDeduction } from '../lib/pantry-deduction.js';
 import { serialize } from '../lib/serialize.js';
+import { getOrCreateHouseholdId } from '../lib/household.js';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 
@@ -137,10 +138,15 @@ router.post('/:id/cook', requireAuth, async (req, res): Promise<void> => {
   if (!recipe) { res.status(404).json({ error: 'Not found' }); return; }
 
   const ingredients = await db.select().from(recipeIngredientsTable).where(eq(recipeIngredientsTable.recipeId, id));
+  const householdId = await getOrCreateHouseholdId(req.userId);
+  const cookSessionId = crypto.randomUUID();
   const result = await applyPantryDeduction(
     req.userId,
+    householdId,
     ingredients.map(i => ({ name: i.name, quantity: Number(i.quantity ?? 1), unit: i.unit ?? 'count' })),
-    servings ?? recipe.servings ?? 1
+    servings ?? recipe.servings ?? 1,
+    recipe.id,
+    cookSessionId
   );
 
   await db.update(recipesTable).set({ timesCooked: (recipe.timesCooked ?? 0) + 1 }).where(eq(recipesTable.id, recipe.id));

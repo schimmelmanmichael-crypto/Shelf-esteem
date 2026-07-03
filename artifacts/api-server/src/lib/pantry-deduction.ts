@@ -1,6 +1,7 @@
 import { db, pantryItemsTable, shoppingItemsTable } from '@workspace/db';
 import { eq, and } from 'drizzle-orm';
 import { logger } from './logger.js';
+import { recordPantryEvent } from './pantryEvents.js';
 import crypto from 'crypto';
 
 const UNIT_CONVERSIONS: Record<string, Record<string, number>> = {
@@ -34,8 +35,11 @@ interface Ingredient {
 
 export async function applyPantryDeduction(
   userId: string,
+  householdId: string,
   ingredients: Ingredient[],
-  servings: number
+  servings: number,
+  recipeId: string,
+  cookSessionId: string
 ): Promise<{ deducted: string[]; addedToShopping: string[] }> {
   const deducted: string[] = [];
   const addedToShopping: string[] = [];
@@ -68,11 +72,31 @@ export async function applyPantryDeduction(
     if (pantryItem) {
       const currentQty = parseFloat(pantryItem.quantity?.toString() ?? '0');
       const newQty = Math.max(0, currentQty - recipeAmountInPantryUnits);
+      const consumedAmount = currentQty - newQty;
 
-      await db
-        .update(pantryItemsTable)
-        .set({ quantity: newQty.toString(), updatedAt: new Date() })
-        .where(eq(pantryItemsTable.id, pantryItem.id));
+      await db.transaction(async (tx) => {
+        await tx
+          .update(pantryItemsTable)
+          .set({ quantity: newQty.toString(), updatedAt: new Date() })
+          .where(eq(pantryItemsTable.id, pantryItem.id));
+
+        // RC2 canon §3.2 — cooking a recipe is a Consume event.
+        await recordPantryEvent({
+          tx,
+          householdId,
+          pantryItemId: pantryItem.id,
+          eventType: 'consume',
+          quantityDelta: -consumedAmount,
+          unit: pantryItem.unit ?? 'count',
+          source: 'recipe_cook',
+          // Deterministic per (cook session, item) — a genuine retry of the same
+          // cook session reproduces the same key, so ticket 4's validation can
+          // catch double-deduction instead of a fresh random key hiding it.
+          idempotencyKey: `${cookSessionId}:${pantryItem.id}`,
+          createdByUserAccountId: userId,
+          metadata: { source_type: 'recipe_cook', recipe_id: recipeId, cook_session_id: cookSessionId },
+        });
+      });
 
       deducted.push(ingredient.name);
 
