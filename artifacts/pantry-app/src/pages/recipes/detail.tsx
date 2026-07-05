@@ -15,8 +15,14 @@ export default function RecipeDetail() {
   const [, navigate] = useLocation();
   const qc = useQueryClient();
   const [servings, setServings] = useState(1);
+  const [leftoverServings, setLeftoverServings] = useState(0);
   const [cookMode, setCookMode] = useState(false);
   const [step, setStep] = useState(0);
+  // Stable across retries of the SAME cook attempt (manual re-click after a
+  // failure, or a query-lib auto-retry reusing these same mutate() variables)
+  // so the backend's idempotency check can actually catch a duplicate. Reset
+  // to a fresh id only after a successful cook, for the next distinct attempt.
+  const [cookSessionId, setCookSessionId] = useState(() => crypto.randomUUID());
 
   const { data: recipe, isLoading } = useQuery<Recipe>({
     queryKey: ['recipes', id],
@@ -24,10 +30,35 @@ export default function RecipeDetail() {
     staleTime: 30_000,
   });
 
+  interface CookResult { ok: boolean; deducted?: string[]; addedToShopping?: string[]; leftoverId?: string | null; error?: string; message?: string; }
+
   const cookMutation = useMutation({
-    mutationFn: () => fetch(`/api/recipes/${id}/cook`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ servings }) }).then(r => r.json()),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['pantry'] }); toast.success('Pantry updated! Missing items added to shopping list.'); },
-    onError: () => toast.error('Cook failed'),
+    mutationFn: async (): Promise<CookResult> => {
+      const res = await fetch(`/api/recipes/${id}/cook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ servings, cookSessionId, leftoverServings }),
+      });
+      const data: CookResult = await res.json();
+      // fetch() only rejects on network failure, not on 4xx/5xx — without this
+      // check a 409 idempotency conflict would be parsed as JSON and treated
+      // as a success by onSuccess below.
+      if (!res.ok) {
+        throw new Error(data.message ?? data.error ?? 'Cook failed');
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['pantry'] });
+      if (data.leftoverId) {
+        qc.invalidateQueries({ queryKey: ['leftovers'] });
+        toast.success('Pantry updated! Leftovers saved. 🍱');
+      } else {
+        toast.success('Pantry updated! Missing items added to shopping list.');
+      }
+      setCookSessionId(crypto.randomUUID());
+    },
+    onError: (err: Error) => toast.error(err.message || 'Cook failed'),
   });
 
   const deleteMutation = useMutation({
@@ -131,6 +162,10 @@ export default function RecipeDetail() {
           <div className="flex items-center gap-3">
             <span className="text-sm text-[var(--muted-foreground)]">Servings:</span>
             <NumberPadInput value={servings} onChange={setServings} min={1} max={20} />
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-[var(--muted-foreground)]">Save as leftovers:</span>
+            <NumberPadInput value={leftoverServings} onChange={setLeftoverServings} min={0} max={20} />
           </div>
           <div className="flex gap-2">
             <Button className="flex-1" disabled={cookMutation.isPending} onClick={() => cookMutation.mutate()}>
