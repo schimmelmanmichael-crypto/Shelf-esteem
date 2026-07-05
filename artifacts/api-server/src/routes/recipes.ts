@@ -146,7 +146,13 @@ router.post('/:id/cook', requireAuth, async (req, res): Promise<void> => {
     cookSessionId?: string;
     leftoverServings?: number;
   };
-  const [recipe] = await db.select().from(recipesTable).where(eq(recipesTable.id, id)).limit(1);
+  // Ownership-or-community check, same rule GET / and GET /can-cook already
+  // use — without this, any authenticated user could cook ANY recipe by id,
+  // including another user's private (non-community) recipe, deducting
+  // their own pantry using ingredients from a recipe that wasn't theirs to use.
+  const [recipe] = await db.select().from(recipesTable)
+    .where(and(eq(recipesTable.id, id), or(eq(recipesTable.userId, req.userId), isNull(recipesTable.userId))))
+    .limit(1);
   if (!recipe) { res.status(404).json({ error: 'Not found' }); return; }
 
   const ingredients = await db.select().from(recipeIngredientsTable).where(eq(recipeIngredientsTable.recipeId, id));

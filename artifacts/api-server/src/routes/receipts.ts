@@ -66,6 +66,17 @@ router.delete('/:id', requireAuth, async (req, res): Promise<void> => {
 router.post('/:id/confirm', requireAuth, async (req, res): Promise<void> => {
   const id = req.params['id'] as string;
   const { addToPantry = false } = req.body as { addToPantry?: boolean };
+
+  // Ownership check — every other endpoint in this file already scopes by
+  // userId (GET/PATCH/DELETE :id); this was the one exception, meaning any
+  // authenticated user could confirm ANY receipt by id, copying its item
+  // names/quantities into their own pantry and silently marking someone
+  // else's receipt "confirmed" without consent.
+  const [receipt] = await db.select().from(receiptsTable)
+    .where(and(eq(receiptsTable.id, id), eq(receiptsTable.userId, req.userId)))
+    .limit(1);
+  if (!receipt) { res.status(404).json({ error: 'Not found' }); return; }
+
   const items = await db.select().from(receiptItemsTable).where(eq(receiptItemsTable.receiptId, id));
   const householdId = addToPantry ? await getOrCreateHouseholdId(req.userId) : null;
 
