@@ -62,7 +62,13 @@ router.post('/purchase', requireAuth, async (req, res): Promise<void> => {
   };
 
   const householdId = await getOrCreateHouseholdId(req.userId);
-  const receiptId = crypto.randomUUID();
+  // Deterministic (not a random UUID like other receipts) from the sorted set
+  // of purchased item ids — a shopping item can only be purchased once (it's
+  // deleted right after), so a genuine retry submits the identical item-id
+  // set and lands on the identical receipt row instead of creating a second,
+  // otherwise-invisible duplicate receipt for a purchase whose actual pantry
+  // acquisitions already correctly no-op via the per-item idempotency check.
+  const receiptId = crypto.createHash('sha256').update([...items.map(i => i.id)].sort().join(',')).digest('hex');
   const total = items.reduce((sum, i) => sum + Number(i.price ?? 0), 0);
 
   try {
@@ -79,7 +85,7 @@ router.post('/purchase', requireAuth, async (req, res): Promise<void> => {
         total: total.toString(),
         status: 'confirmed',
         itemCount: items.length,
-      });
+      }).onConflictDoNothing();
 
       for (const item of items) {
         // Deterministic per shopping-list item — a shopping item can only be
