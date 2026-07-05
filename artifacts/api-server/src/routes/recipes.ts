@@ -5,6 +5,8 @@ import { requireAuth } from '../middlewares/requireAuth.js';
 import { applyPantryDeduction } from '../lib/pantry-deduction.js';
 import { serialize } from '../lib/serialize.js';
 import { getOrCreateHouseholdId } from '../lib/household.js';
+import { IdempotencyConflictError, isUniqueConstraintViolation } from '../lib/idempotency.js';
+import { logger } from '../lib/logger.js';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 
@@ -133,21 +135,53 @@ router.delete('/:id', requireAuth, async (req, res): Promise<void> => {
 
 router.post('/:id/cook', requireAuth, async (req, res): Promise<void> => {
   const id = req.params['id'] as string;
-  const { servings } = req.body as { servings?: number };
+  // cookSessionId: optional client-supplied key for forward-compat. A client
+  // update can send a stable id it reuses across a retry/double-submit of
+  // the SAME cook action; until then, one minted fresh per request can only
+  // ever match itself, so idempotency detection has no real effect yet.
+  // leftoverServings: optional client-supplied "how many servings to save as
+  // a leftover" — omitted or 0 means no leftover, same as today's behavior.
+  const { servings, cookSessionId: clientCookSessionId, leftoverServings } = req.body as {
+    servings?: number;
+    cookSessionId?: string;
+    leftoverServings?: number;
+  };
   const [recipe] = await db.select().from(recipesTable).where(eq(recipesTable.id, id)).limit(1);
   if (!recipe) { res.status(404).json({ error: 'Not found' }); return; }
 
   const ingredients = await db.select().from(recipeIngredientsTable).where(eq(recipeIngredientsTable.recipeId, id));
   const householdId = await getOrCreateHouseholdId(req.userId);
-  const cookSessionId = crypto.randomUUID();
-  const result = await applyPantryDeduction(
-    req.userId,
-    householdId,
-    ingredients.map(i => ({ name: i.name, quantity: Number(i.quantity ?? 1), unit: i.unit ?? 'count' })),
-    servings ?? recipe.servings ?? 1,
-    recipe.id,
-    cookSessionId
-  );
+  const cookSessionId = clientCookSessionId ?? crypto.randomUUID();
+
+  let result;
+  try {
+    result = await applyPantryDeduction(
+      req.userId,
+      householdId,
+      ingredients.map(i => ({ name: i.name, quantity: Number(i.quantity ?? 1), unit: i.unit ?? 'count' })),
+      servings ?? recipe.servings ?? 1,
+      recipe.id,
+      cookSessionId,
+      leftoverServings ?? 0,
+      recipe.name
+    );
+  } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      res.status(409).json({ error: 'Idempotency conflict', message: err.message });
+      return;
+    }
+    if (isUniqueConstraintViolation(err)) {
+      // Genuine concurrent double-submit racing on the same cook session —
+      // rare (the app-level check above catches the common sequential-retry
+      // case first), but real. Ask the client to reconcile rather than
+      // fabricate a success response we can't back with committed data.
+      res.status(409).json({ error: 'Concurrent duplicate request', message: 'This cook session is already being processed' });
+      return;
+    }
+    logger.error({ err }, 'Cook deduction error');
+    res.status(500).json({ error: 'Failed to cook recipe' });
+    return;
+  }
 
   await db.update(recipesTable).set({ timesCooked: (recipe.timesCooked ?? 0) + 1 }).where(eq(recipesTable.id, recipe.id));
 

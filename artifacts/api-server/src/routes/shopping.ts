@@ -64,21 +64,24 @@ router.post('/purchase', requireAuth, async (req, res): Promise<void> => {
   const receiptId = crypto.randomUUID();
   const total = items.reduce((sum, i) => sum + Number(i.price ?? 0), 0);
 
-  await db.insert(receiptsTable).values({
-    id: receiptId,
-    userId: req.userId,
-    householdId,
-    storeName,
-    purchaseDate,
-    total: total.toString(),
-    status: 'confirmed',
-    itemCount: items.length,
-  });
+  // RC2 canon §3.7/§3.10 — checkout inventory commit is one atomic unit: the
+  // receipt creation, every item's Acquire event, and removing purchased
+  // items from the shopping list all commit together, or none do.
+  await db.transaction(async (tx) => {
+    await tx.insert(receiptsTable).values({
+      id: receiptId,
+      userId: req.userId,
+      householdId,
+      storeName,
+      purchaseDate,
+      total: total.toString(),
+      status: 'confirmed',
+      itemCount: items.length,
+    });
 
-  for (const item of items) {
-    const itemId = crypto.randomUUID();
+    for (const item of items) {
+      const itemId = crypto.randomUUID();
 
-    await db.transaction(async (tx) => {
       await tx.insert(pantryItemsTable).values({
         id: itemId,
         userId: req.userId,
@@ -105,12 +108,12 @@ router.post('/purchase', requireAuth, async (req, res): Promise<void> => {
         createdByUserAccountId: req.userId,
         metadata: { source_type: 'shopping_purchase', receipt_id: receiptId },
       });
-    });
 
-    await db.delete(shoppingItemsTable).where(
-      and(eq(shoppingItemsTable.id, item.id), eq(shoppingItemsTable.userId, req.userId))
-    );
-  }
+      await tx.delete(shoppingItemsTable).where(
+        and(eq(shoppingItemsTable.id, item.id), eq(shoppingItemsTable.userId, req.userId))
+      );
+    }
+  });
 
   res.json({ ok: true, receiptId });
   return;

@@ -11,8 +11,10 @@ interface RecordPantryEventInput {
   pantryItemId?: string | null;
   leftoverId?: string | null;
   eventType: PantryEventType;
-  quantityDelta: number;
-  unit: string;
+  // Nullable — a Transform event like "meal -> leftover" has no single pantry
+  // item's quantity to report (RC2 canon §3.2).
+  quantityDelta?: number | null;
+  unit?: string | null;
   source: string;
   idempotencyKey: string;
   createdByUserAccountId?: string | null;
@@ -31,7 +33,7 @@ export async function recordPantryEvent(input: RecordPantryEventInput) {
     .values({
       id: crypto.randomUUID(),
       ...rest,
-      quantityDelta: quantityDelta.toString(),
+      quantityDelta: quantityDelta != null ? quantityDelta.toString() : null,
       metadata,
     })
     .returning();

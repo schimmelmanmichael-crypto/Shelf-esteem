@@ -65,15 +65,20 @@ router.post('/:id/confirm', requireAuth, async (req, res): Promise<void> => {
   const id = req.params['id'] as string;
   const { addToPantry = false } = req.body as { addToPantry?: boolean };
   const items = await db.select().from(receiptItemsTable).where(eq(receiptItemsTable.receiptId, id));
+  const householdId = addToPantry ? await getOrCreateHouseholdId(req.userId) : null;
 
-  if (addToPantry) {
-    const householdId = await getOrCreateHouseholdId(req.userId);
+  // RC2 canon §3.7/§3.10 — checkout inventory commit is one atomic unit: all
+  // Acquire events (and the bookkeeping flags for this confirm action) commit
+  // together, or none do. Unlike receipt *parsing* (a separate, genuinely
+  // async pipeline canon allows to fail independently), the addedToPantry
+  // flags and the receipt's own confirmed status are part of this same
+  // synchronous action, so they belong in the same transaction as the acquires.
+  await db.transaction(async (tx) => {
+    if (addToPantry && householdId) {
+      for (const item of items) {
+        const itemId = crypto.randomUUID();
+        const quantity = item.quantity?.toString() ?? '1';
 
-    for (const item of items) {
-      const itemId = crypto.randomUUID();
-      const quantity = item.quantity?.toString() ?? '1';
-
-      await db.transaction(async (tx) => {
         await tx.insert(pantryItemsTable).values({
           id: itemId,
           userId: req.userId,
@@ -99,17 +104,17 @@ router.post('/:id/confirm', requireAuth, async (req, res): Promise<void> => {
           createdByUserAccountId: req.userId,
           metadata: { source_type: 'receipt_confirm', receipt_item_id: item.id },
         });
-      });
 
-      await db.update(receiptItemsTable)
-        .set({ addedToPantry: 'yes' })
-        .where(eq(receiptItemsTable.id, item.id));
+        await tx.update(receiptItemsTable)
+          .set({ addedToPantry: 'yes' })
+          .where(eq(receiptItemsTable.id, item.id));
+      }
     }
-  }
 
-  await db.update(receiptsTable)
-    .set({ status: 'confirmed', updatedAt: new Date() })
-    .where(eq(receiptsTable.id, id));
+    await tx.update(receiptsTable)
+      .set({ status: 'confirmed', updatedAt: new Date() })
+      .where(eq(receiptsTable.id, id));
+  });
 
   res.json({ ok: true });
   return;

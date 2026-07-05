@@ -32,8 +32,12 @@ export const pantryEventsTable = pgTable(
     pantryItemId: text('pantry_item_id'),
     leftoverId: text('leftover_id'),
     eventType: text('event_type').notNull(),
-    quantityDelta: decimal('quantity_delta', { precision: 10, scale: 2 }).notNull(),
-    unit: text('unit').notNull(),
+    // Nullable: a Transform event representing "meal -> leftover" (RC2 canon
+    // §3.2) has no single pantry item's quantity to report — servings-created
+    // for that case lives in metadata instead, since it isn't the same kind
+    // of quantity as a pantry item's unit-of-measure delta.
+    quantityDelta: decimal('quantity_delta', { precision: 10, scale: 2 }),
+    unit: text('unit'),
     source: text('source').notNull(),
     idempotencyKey: text('idempotency_key').notNull(),
     createdByUserAccountId: text('created_by_user_account_id'),
