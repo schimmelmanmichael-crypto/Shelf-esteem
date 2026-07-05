@@ -43,6 +43,10 @@ export default function PantryPage() {
   const [storage, setStorage] = useState('All');
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState({ name: '', quantity: '1', unit: 'count', category: 'other', storageArea: 'pantry', expiryDate: '', brand: '' });
+  // Stable across a retry of the SAME "add item" attempt (e.g. clicking Add
+  // Item again after a failure without closing the dialog); refreshed each
+  // time the dialog opens for a new attempt, and after a successful add.
+  const [addRequestId, setAddRequestId] = useState(() => crypto.randomUUID());
 
   const { data: items = [] } = useQuery<PantryItem[]>({
     queryKey: ['pantry'],
@@ -51,10 +55,29 @@ export default function PantryPage() {
   });
 
   const addItem = useMutation({
-    mutationFn: (data: typeof form) =>
-      fetch('/api/pantry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }).then(r => r.json()),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['pantry'] }); toast.success('Item added!'); setAddOpen(false); setForm({ name: '', quantity: '1', unit: 'count', category: 'other', storageArea: 'pantry', expiryDate: '', brand: '' }); },
-    onError: () => toast.error('Failed to add item'),
+    mutationFn: async (data: typeof form) => {
+      const res = await fetch('/api/pantry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...data, idempotencyKey: addRequestId }),
+      });
+      const body = await res.json();
+      // fetch() only rejects on network failure, not on 4xx/5xx — without
+      // this check a 409 idempotency conflict would be parsed as JSON and
+      // treated as a success by onSuccess below.
+      if (!res.ok) {
+        throw new Error(body.message ?? body.error ?? 'Failed to add item');
+      }
+      return body;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pantry'] });
+      toast.success('Item added!');
+      setAddOpen(false);
+      setForm({ name: '', quantity: '1', unit: 'count', category: 'other', storageArea: 'pantry', expiryDate: '', brand: '' });
+      setAddRequestId(crypto.randomUUID());
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to add item'),
   });
 
   const deleteItem = useMutation({
@@ -78,7 +101,7 @@ export default function PantryPage() {
             <Button variant="outline" size="sm" asChild>
               <Link href="/pantry/scan"><Scan size={16} className="mr-1" />Scan</Link>
             </Button>
-            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+            <Dialog open={addOpen} onOpenChange={(open) => { setAddOpen(open); if (open) setAddRequestId(crypto.randomUUID()); }}>
               <DialogTrigger asChild>
                 <Button size="sm"><Plus size={16} className="mr-1" />Add Item</Button>
               </DialogTrigger>

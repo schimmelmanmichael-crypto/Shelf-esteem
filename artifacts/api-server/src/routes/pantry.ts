@@ -61,11 +61,38 @@ router.post('/', requireAuth, async (req, res): Promise<void> => {
     return;
   }
 
+  // Optional client-supplied key for forward-compat retry detection — same
+  // pattern as recipes.ts cookSessionId. A client update can generate one per
+  // "add item" attempt and reuse it only if that specific submit is retried.
+  const { idempotencyKey: clientIdempotencyKey } = req.body as { idempotencyKey?: string };
+  const idempotencyKey = clientIdempotencyKey ?? crypto.randomUUID();
+  // The whitelisted fields ARE the request — if two adds submit the exact
+  // same data under the same key, treat the second as a duplicate no-op.
+  const comparisonPayload = { ...parsed.data };
+
   try {
     const householdId = await getOrCreateHouseholdId(req.userId);
-    const itemId = crypto.randomUUID();
 
     const item = await db.transaction(async (tx) => {
+      const { duplicate, existing } = await resolveIdempotency({
+        tx,
+        householdId,
+        eventType: 'acquire',
+        idempotencyKey,
+        comparisonPayload,
+      });
+
+      if (duplicate) {
+        if (!existing?.pantryItemId) return null;
+        const [existingItem] = await tx
+          .select()
+          .from(pantryItemsTable)
+          .where(eq(pantryItemsTable.id, existing.pantryItemId))
+          .limit(1);
+        return existingItem ?? null;
+      }
+
+      const itemId = crypto.randomUUID();
       const [inserted] = await tx.insert(pantryItemsTable).values({
         id: itemId,
         userId: req.userId,
@@ -82,17 +109,25 @@ router.post('/', requireAuth, async (req, res): Promise<void> => {
         quantityDelta: parseFloat(parsed.data.quantity ?? '0'),
         unit: parsed.data.unit ?? 'count',
         source: 'manual',
-        // Placeholder key — ticket 4 wires up real client-supplied idempotency keys + conflict validation.
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
         createdByUserAccountId: req.userId,
-        metadata: { source_type: 'manual' },
+        metadata: { source_type: 'manual', idempotency_payload: comparisonPayload },
       });
 
       return inserted;
     });
 
     res.json(serialize(item));
-  } catch {
+  } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      res.status(409).json({ error: 'Idempotency conflict', message: err.message });
+      return;
+    }
+    if (isUniqueConstraintViolation(err)) {
+      res.status(409).json({ error: 'Concurrent duplicate request', message: 'This item is already being added' });
+      return;
+    }
+    logger.error({ err }, 'Pantry add error');
     // Never leak DB internals to the client
     res.status(500).json({ error: 'Failed to save pantry item' });
   }
@@ -131,40 +166,75 @@ router.patch('/:id', requireAuth, async (req, res): Promise<void> => {
   const oldQty = parseFloat(before.quantity?.toString() ?? '0');
   const newQty = parsed.data.quantity !== undefined ? parseFloat(parsed.data.quantity) : oldQty;
 
-  const updated = await db.transaction(async (tx) => {
-    const [row] = await tx
-      .update(pantryItemsTable)
-      .set({ ...parsed.data, householdId, updatedAt: new Date() })
-      .where(and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId)))
-      .returning();
+  // Optional client-supplied key, same forward-compat pattern as POST /pantry.
+  // No UI calls this endpoint at all yet (see canon/test-checklists/ticket-8-
+  // reconcile-metadata.md), so there's nothing to wire this up to today —
+  // added for API completeness/whenever an edit UI gets built.
+  const { idempotencyKey: clientIdempotencyKey } = req.body as { idempotencyKey?: string };
+  const idempotencyKey = clientIdempotencyKey ?? crypto.randomUUID();
+  const comparisonPayload = { ...parsed.data };
 
-    // RC2 canon §3.2/§11.8 — a manual PATCH is a Reconcile event.
-    await recordPantryEvent({
-      tx,
-      householdId,
-      pantryItemId: id,
-      eventType: 'reconcile',
-      quantityDelta: newQty - oldQty,
-      unit: parsed.data.unit ?? before.unit ?? 'count',
-      source: 'manual_correction',
-      idempotencyKey: crypto.randomUUID(),
-      createdByUserAccountId: req.userId,
-      reasonCode,
-      metadata: {
-        source_type: 'manual_correction',
-        actor_type: 'user',
-        reason_code: reasonCode,
-        actor: req.userId,
-        prior_state_snapshot: before,
-        corrected_state_snapshot: parsed.data,
-        notes: null,
-      },
+  try {
+    const updated = await db.transaction(async (tx) => {
+      const { duplicate } = await resolveIdempotency({
+        tx,
+        householdId,
+        eventType: 'reconcile',
+        idempotencyKey,
+        comparisonPayload,
+      });
+
+      if (duplicate) {
+        return before;
+      }
+
+      const [row] = await tx
+        .update(pantryItemsTable)
+        .set({ ...parsed.data, householdId, updatedAt: new Date() })
+        .where(and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId)))
+        .returning();
+
+      // RC2 canon §3.2/§11.8 — a manual PATCH is a Reconcile event.
+      await recordPantryEvent({
+        tx,
+        householdId,
+        pantryItemId: id,
+        eventType: 'reconcile',
+        quantityDelta: newQty - oldQty,
+        unit: parsed.data.unit ?? before.unit ?? 'count',
+        source: 'manual_correction',
+        idempotencyKey,
+        createdByUserAccountId: req.userId,
+        reasonCode,
+        metadata: {
+          source_type: 'manual_correction',
+          actor_type: 'user',
+          reason_code: reasonCode,
+          actor: req.userId,
+          prior_state_snapshot: before,
+          corrected_state_snapshot: parsed.data,
+          notes: null,
+          idempotency_payload: comparisonPayload,
+        },
+      });
+
+      return row;
     });
 
-    return row;
-  });
-
-  res.json(serialize(updated));
+    res.json(serialize(updated));
+  } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      res.status(409).json({ error: 'Idempotency conflict', message: err.message });
+      return;
+    }
+    if (isUniqueConstraintViolation(err)) {
+      res.status(409).json({ error: 'Concurrent duplicate request', message: 'This item is already being updated' });
+      return;
+    }
+    logger.error({ err }, 'Pantry patch error');
+    res.status(500).json({ error: 'Failed to update pantry item' });
+    return;
+  }
   return;
 });
 
