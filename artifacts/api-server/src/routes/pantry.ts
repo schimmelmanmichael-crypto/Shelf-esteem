@@ -6,6 +6,8 @@ import { lookupBarcode } from '../lib/barcodeService.js';
 import { serialize } from '../lib/serialize.js';
 import { getOrCreateHouseholdId } from '../lib/household.js';
 import { recordPantryEvent } from '../lib/pantryEvents.js';
+import { resolveIdempotency, IdempotencyConflictError, isUniqueConstraintViolation } from '../lib/idempotency.js';
+import { logger } from '../lib/logger.js';
 import { PANTRY_EVENT_REASON_CODES } from '@workspace/db';
 import type { PantryEventReasonCode } from '@workspace/db';
 import crypto from 'crypto';
@@ -186,27 +188,58 @@ router.delete('/:id', requireAuth, async (req, res): Promise<void> => {
 
   const householdId = before.householdId ?? await getOrCreateHouseholdId(req.userId);
   const remainingQty = parseFloat(before.quantity?.toString() ?? '0');
+  // Deterministic per pantry item — a sequential retry naturally 404s above
+  // once the row is gone, so this mainly guards a concurrent duplicate DELETE
+  // for the same item from creating two separate Discard events.
+  const idempotencyKey = `${id}:discard`;
+  const comparisonPayload = { pantryItemId: id, remainingQty, unit: before.unit ?? 'count', reasonCode };
 
-  await db.transaction(async (tx) => {
-    await tx.delete(pantryItemsTable).where(
-      and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId))
-    );
+  try {
+    await db.transaction(async (tx) => {
+      const { duplicate } = await resolveIdempotency({
+        tx,
+        householdId,
+        eventType: 'discard',
+        idempotencyKey,
+        comparisonPayload,
+      });
 
-    // RC2 canon §3.2 — manual delete is a Discard event.
-    await recordPantryEvent({
-      tx,
-      householdId,
-      pantryItemId: id,
-      eventType: 'discard',
-      quantityDelta: -remainingQty,
-      unit: before.unit ?? 'count',
-      source: 'manual',
-      idempotencyKey: crypto.randomUUID(),
-      createdByUserAccountId: req.userId,
-      reasonCode,
-      metadata: { source_type: 'manual', reason_code: reasonCode },
+      if (duplicate) {
+        return;
+      }
+
+      await tx.delete(pantryItemsTable).where(
+        and(eq(pantryItemsTable.id, id), eq(pantryItemsTable.userId, req.userId))
+      );
+
+      // RC2 canon §3.2 — manual delete is a Discard event.
+      await recordPantryEvent({
+        tx,
+        householdId,
+        pantryItemId: id,
+        eventType: 'discard',
+        quantityDelta: -remainingQty,
+        unit: before.unit ?? 'count',
+        source: 'manual',
+        idempotencyKey,
+        createdByUserAccountId: req.userId,
+        reasonCode,
+        metadata: { source_type: 'manual', reason_code: reasonCode, idempotency_payload: comparisonPayload },
+      });
     });
-  });
+  } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      res.status(409).json({ error: 'Idempotency conflict', message: err.message });
+      return;
+    }
+    if (isUniqueConstraintViolation(err)) {
+      res.status(409).json({ error: 'Concurrent duplicate request', message: 'This item is already being deleted' });
+      return;
+    }
+    logger.error({ err }, 'Pantry delete error');
+    res.status(500).json({ error: 'Failed to delete pantry item' });
+    return;
+  }
 
   res.json({ ok: true });
   return;

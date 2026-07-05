@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { logger } from './logger.js';
 import { getOrCreateHouseholdId } from './household.js';
 import { recordPantryEvent } from './pantryEvents.js';
+import { resolveIdempotency } from './idempotency.js';
 
 function daysFromNow(offset: number): string {
   const date = new Date();
@@ -28,9 +29,28 @@ export async function activateDemo(userId: string): Promise<void> {
   const householdId = await getOrCreateHouseholdId(userId);
 
   for (const item of buildDemoPantry()) {
-    const itemId = crypto.randomUUID();
+    // Deterministic per (user, item name) — the seed list is fixed/constant,
+    // so a genuine retry of demo activation reproduces the same key and the
+    // same comparisonPayload, unlike a randomly-generated key that could
+    // never detect a duplicate activation.
+    const idempotencyKey = `${userId}:demo_seed:${item.name}`;
+    const comparisonPayload = { name: item.name, quantity: item.quantity, unit: item.unit };
 
     await db.transaction(async (tx) => {
+      const { duplicate } = await resolveIdempotency({
+        tx,
+        householdId,
+        eventType: 'acquire',
+        idempotencyKey,
+        comparisonPayload,
+      });
+
+      if (duplicate) {
+        return;
+      }
+
+      const itemId = crypto.randomUUID();
+
       await tx.insert(pantryItemsTable).values({
         id: itemId,
         userId,
@@ -47,9 +67,9 @@ export async function activateDemo(userId: string): Promise<void> {
         quantityDelta: parseFloat(item.quantity),
         unit: item.unit,
         source: 'demo_seed',
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey,
         createdByUserAccountId: userId,
-        metadata: { source_type: 'demo_seed' },
+        metadata: { source_type: 'demo_seed', idempotency_payload: comparisonPayload },
       });
     });
   }

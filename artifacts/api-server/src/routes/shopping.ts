@@ -6,6 +6,7 @@ import { serialize } from '../lib/serialize.js';
 import { logger } from '../lib/logger.js';
 import { getOrCreateHouseholdId } from '../lib/household.js';
 import { recordPantryEvent } from '../lib/pantryEvents.js';
+import { resolveIdempotency, IdempotencyConflictError, isUniqueConstraintViolation } from '../lib/idempotency.js';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 
@@ -64,56 +65,84 @@ router.post('/purchase', requireAuth, async (req, res): Promise<void> => {
   const receiptId = crypto.randomUUID();
   const total = items.reduce((sum, i) => sum + Number(i.price ?? 0), 0);
 
-  // RC2 canon §3.7/§3.10 — checkout inventory commit is one atomic unit: the
-  // receipt creation, every item's Acquire event, and removing purchased
-  // items from the shopping list all commit together, or none do.
-  await db.transaction(async (tx) => {
-    await tx.insert(receiptsTable).values({
-      id: receiptId,
-      userId: req.userId,
-      householdId,
-      storeName,
-      purchaseDate,
-      total: total.toString(),
-      status: 'confirmed',
-      itemCount: items.length,
-    });
-
-    for (const item of items) {
-      const itemId = crypto.randomUUID();
-
-      await tx.insert(pantryItemsTable).values({
-        id: itemId,
+  try {
+    // RC2 canon §3.7/§3.10 — checkout inventory commit is one atomic unit: the
+    // receipt creation, every item's Acquire event, and removing purchased
+    // items from the shopping list all commit together, or none do.
+    await db.transaction(async (tx) => {
+      await tx.insert(receiptsTable).values({
+        id: receiptId,
         userId: req.userId,
         householdId,
-        name: item.name,
-        quantity: item.quantity ?? '1',
-        unit: item.unit ?? 'count',
-        purchaseStore: storeName,
-      }).onConflictDoNothing();
-
-      // RC2 canon §3.2 — a shopping-list purchase adds food to pantry via an Acquire event.
-      await recordPantryEvent({
-        tx,
-        householdId,
-        pantryItemId: itemId,
-        eventType: 'acquire',
-        quantityDelta: parseFloat(item.quantity ?? '1'),
-        unit: item.unit ?? 'count',
-        source: 'shopping_purchase',
-        // Placeholder key — receiptId is freshly minted per request, not a stable
-        // client-supplied id, so this can't detect a duplicate submit yet either
-        // (same limitation as the manual pantry-add path — ticket 4 territory).
-        idempotencyKey: crypto.randomUUID(),
-        createdByUserAccountId: req.userId,
-        metadata: { source_type: 'shopping_purchase', receipt_id: receiptId },
+        storeName,
+        purchaseDate,
+        total: total.toString(),
+        status: 'confirmed',
+        itemCount: items.length,
       });
 
-      await tx.delete(shoppingItemsTable).where(
-        and(eq(shoppingItemsTable.id, item.id), eq(shoppingItemsTable.userId, req.userId))
-      );
+      for (const item of items) {
+        // Deterministic per shopping-list item — a shopping item can only be
+        // purchased once (it's deleted right after), so its own id is already
+        // a stable scope for a genuine retry. Unlike receiptId (freshly minted
+        // per request), this doesn't depend on anything request-generated.
+        const idempotencyKey = `${item.id}:purchase`;
+        const comparisonPayload = { shoppingItemId: item.id, name: item.name, quantity: item.quantity, unit: item.unit };
+
+        const { duplicate } = await resolveIdempotency({
+          tx,
+          householdId,
+          eventType: 'acquire',
+          idempotencyKey,
+          comparisonPayload,
+        });
+
+        if (!duplicate) {
+          const itemId = crypto.randomUUID();
+
+          await tx.insert(pantryItemsTable).values({
+            id: itemId,
+            userId: req.userId,
+            householdId,
+            name: item.name,
+            quantity: item.quantity ?? '1',
+            unit: item.unit ?? 'count',
+            purchaseStore: storeName,
+          }).onConflictDoNothing();
+
+          // RC2 canon §3.2 — a shopping-list purchase adds food to pantry via an Acquire event.
+          await recordPantryEvent({
+            tx,
+            householdId,
+            pantryItemId: itemId,
+            eventType: 'acquire',
+            quantityDelta: parseFloat(item.quantity ?? '1'),
+            unit: item.unit ?? 'count',
+            source: 'shopping_purchase',
+            idempotencyKey,
+            createdByUserAccountId: req.userId,
+            metadata: { source_type: 'shopping_purchase', receipt_id: receiptId, idempotency_payload: comparisonPayload },
+          });
+        }
+
+        await tx.delete(shoppingItemsTable).where(
+          and(eq(shoppingItemsTable.id, item.id), eq(shoppingItemsTable.userId, req.userId))
+        );
+      }
+    });
+  } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      res.status(409).json({ error: 'Idempotency conflict', message: err.message });
+      return;
     }
-  });
+    if (isUniqueConstraintViolation(err)) {
+      res.status(409).json({ error: 'Concurrent duplicate request', message: 'This purchase is already being processed' });
+      return;
+    }
+    logger.error({ err }, 'Shopping purchase error');
+    res.status(500).json({ error: 'Failed to complete purchase' });
+    return;
+  }
 
   res.json({ ok: true, receiptId });
   return;
