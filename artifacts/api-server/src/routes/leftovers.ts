@@ -4,6 +4,23 @@ import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { serialize } from '../lib/serialize.js';
 import crypto from 'crypto';
+import { z } from 'zod';
+
+// Whitelist for PATCH /:id — only these fields are client-editable. Without
+// this, {...req.body} spread into .set() unchecked could overwrite id/userId/
+// householdId on the caller's own row.
+const leftoverPatchSchema = z.object({
+  mealName:         z.string().min(1).optional(),
+  recipeId:         z.string().optional(),
+  parentLeftoverId: z.string().optional(),
+  servingsAvailable: z.number().optional(),
+  servingsOriginal:  z.number().optional(),
+  costPerServing:    z.number().optional().transform(v => v?.toString()),
+  storageLocation:   z.string().optional(),
+  expirationDate:    z.string().optional(),
+  status:            z.string().optional(),
+  notes:             z.string().optional(),
+});
 
 const router: Router = Router();
 
@@ -25,9 +42,16 @@ router.post('/', requireAuth, async (req, res): Promise<void> => {
 
 router.patch('/:id', requireAuth, async (req, res): Promise<void> => {
   const id = req.params['id'] as string;
+
+  const parsed = leftoverPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', fields: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
   const [updated] = await db
     .update(leftoversTable)
-    .set({ ...req.body, updatedAt: new Date() })
+    .set({ ...parsed.data, updatedAt: new Date() })
     .where(and(eq(leftoversTable.id, id), eq(leftoversTable.userId, req.userId)))
     .returning();
   res.json(serialize(updated));

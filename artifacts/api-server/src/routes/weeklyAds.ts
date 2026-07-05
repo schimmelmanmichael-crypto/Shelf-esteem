@@ -4,6 +4,19 @@ import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { serialize } from '../lib/serialize.js';
 import crypto from 'crypto';
+import { z } from 'zod';
+
+// Whitelist for POST / — only these fields are client-settable. Without
+// this, {...adData} spread into .values() unchecked (previously cast `as any`
+// to bypass the type error that whitelisting now fixes properly) could
+// overwrite id/userId/status on the new row.
+const weeklyAdPostSchema = z.object({
+  storeName: z.string().min(1),
+  weekOf:    z.string().optional(),
+  imageUrl:  z.string().optional(),
+  sourceUrl: z.string().optional(),
+  rawText:   z.string().optional(),
+});
 
 const router: Router = Router();
 
@@ -26,14 +39,18 @@ router.get('/:id', requireAuth, async (req, res): Promise<void> => {
 });
 
 router.post('/', requireAuth, async (req, res): Promise<void> => {
-  const { items: _items, ...adData } = req.body as { items?: unknown[]; storeName: string; [k: string]: unknown };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parsed = weeklyAdPostSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', fields: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
   const [ad] = await db.insert(weeklyAdsTable).values({
     id: crypto.randomUUID(),
     userId: req.userId,
-    ...adData,
+    ...parsed.data,
     status: 'pending',
-  } as any).returning();
+  }).returning();
   res.json(serialize(ad));
   return;
 });

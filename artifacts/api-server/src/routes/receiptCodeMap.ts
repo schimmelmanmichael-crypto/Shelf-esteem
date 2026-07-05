@@ -4,6 +4,17 @@ import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { serialize } from '../lib/serialize.js';
 import crypto from 'crypto';
+import { z } from 'zod';
+
+// Whitelist for PATCH /:id — only these fields are client-editable. Without
+// this, {...req.body} spread into .set() unchecked could overwrite id/userId/
+// householdId on the caller's own row.
+const receiptCodeMapPatchSchema = z.object({
+  receiptCode: z.string().optional(),
+  itemName:    z.string().optional(),
+  category:    z.string().optional(),
+  brand:       z.string().optional(),
+});
 
 const router: Router = Router();
 
@@ -25,9 +36,16 @@ router.post('/', requireAuth, async (req, res): Promise<void> => {
 
 router.patch('/:id', requireAuth, async (req, res): Promise<void> => {
   const id = req.params['id'] as string;
+
+  const parsed = receiptCodeMapPatchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', fields: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
   const [updated] = await db
     .update(receiptCodeMapTable)
-    .set({ ...req.body, updatedAt: new Date() })
+    .set({ ...parsed.data, updatedAt: new Date() })
     .where(and(eq(receiptCodeMapTable.id, id), eq(receiptCodeMapTable.userId, req.userId)))
     .returning();
   res.json(serialize(updated));
