@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, receiptsTable, receiptItemsTable } from '@workspace/db';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/requireAuth.js';
 import { serialize } from '../lib/serialize.js';
 import { logger } from '../lib/logger.js';
@@ -25,6 +25,21 @@ router.post('/', requireAuth, async (req, res): Promise<void> => {
   if (!receiptText && !imageBase64) {
     res.status(400).json({ error: 'receiptText or imageBase64 required' });
     return;
+  }
+
+  // Ownership check, done before the OpenAI call so an invalid/unauthorized
+  // receiptId fails fast instead of wasting an API call. Without this, any
+  // authenticated user could pass another user's receiptId and overwrite
+  // that receipt's parsed data, plus attach fabricated receiptItems (tagged
+  // with the attacker's own userId) to a receipt that isn't theirs.
+  if (receiptId) {
+    const [existingReceipt] = await db.select().from(receiptsTable)
+      .where(and(eq(receiptsTable.id, receiptId), eq(receiptsTable.userId, req.userId)))
+      .limit(1);
+    if (!existingReceipt) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
   }
 
   try {
