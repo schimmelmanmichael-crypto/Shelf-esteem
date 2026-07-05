@@ -5,6 +5,7 @@ export * from './shopping.js';
 export * from './meal-plan.js';
 export * from './leftovers.js';
 export * from './pantry-events.js';
+export * from './goal-profile.js';
 export * from './receipts.js';
 export * from './price.js';
 export * from './weekly-ads.js';

@@ -6,6 +6,11 @@ export const leftoversTable = pgTable('leftovers', {
   householdId: text('household_id'),
   mealName: text('meal_name').notNull(),
   recipeId: text('recipe_id'),
+  // RC2 canon §5.7/§3.13 — schema readiness for splitting one leftover into
+  // multiple containers (e.g. some to fridge, some to freezer). The split
+  // feature itself is deferred to Phase 1b (§11.5); this column just ensures
+  // the model doesn't block it later.
+  parentLeftoverId: text('parent_leftover_id'),
   servingsAvailable: integer('servings_available').default(0),
   servingsOriginal: integer('servings_original'),
   costPerServing: decimal('cost_per_serving', { precision: 10, scale: 2 }),
