@@ -2,6 +2,7 @@ import type Stripe from 'stripe';
 import { db, usersTable } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import { logger } from './lib/logger.js';
+import { getStripe } from './stripeClient.js';
 
 function planFromProductName(name: string): string {
   const lower = name.toLowerCase();
@@ -18,9 +19,17 @@ export async function handleSubscriptionUpsert(sub: Stripe.Subscription): Promis
   if (!user) return;
 
   const item = sub.items.data[0];
-  const productName = typeof item?.price?.product === 'object'
-    ? (item.price.product as Stripe.Product).name
-    : '';
+  const product = item?.price?.product;
+  let productName = '';
+  if (typeof product === 'object') {
+    productName = (product as Stripe.Product).name;
+  } else if (typeof product === 'string') {
+    // Not pre-expanded (webhook payloads never are, and subscriptions.list
+    // can't expand this deep — Stripe hard-limits expand to 4 levels, and
+    // data.items.data.price.product is 5) — fetch it directly instead.
+    const fetched = await getStripe().products.retrieve(product);
+    productName = fetched.name;
+  }
   const plan = sub.status === 'active' || sub.status === 'trialing' ? planFromProductName(productName) : 'free';
 
   await db.update(usersTable)
@@ -44,7 +53,7 @@ export async function handleSubscriptionDeleted(sub: Stripe.Subscription): Promi
 
 export async function syncBackfill(stripe: import('stripe').default): Promise<void> {
   logger.info('Stripe backfill starting');
-  const subs = await stripe.subscriptions.list({ status: 'all', limit: 100, expand: ['data.items.data.price.product'] });
+  const subs = await stripe.subscriptions.list({ status: 'all', limit: 100, expand: ['data.items.data.price'] });
   for (const sub of subs.data) {
     if (sub.status === 'active' || sub.status === 'trialing') {
       await handleSubscriptionUpsert(sub).catch(err => logger.error({ err }, 'Backfill item error'));
