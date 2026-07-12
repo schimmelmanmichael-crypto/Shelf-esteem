@@ -195,7 +195,8 @@ wiring, no backend work needed:
 - Remove button on the row gets `e.stopPropagation()` so it doesn't also
   trigger the row's new `onClick`.
 
-**Committed and pushed as `c3222c0` — not yet verified live.**
+**Committed and pushed as `c3222c0`.** **Verified live in browser by
+user — works.**
 
 ## 3. Next step
 
@@ -224,12 +225,11 @@ this session — this environment still has no `DATABASE_URL`). Status:
    already-working lookup logic, so risk is low, but layout/tab-switching
    itself hasn't been eyeballed).
 9. Pantry item edit flow — tap an item, edit fields, Save (PATCH) and
-   Delete both work, dialog closes correctly → **Not yet confirmed.**
-   Highest priority of the unconfirmed items since it's net-new UI wired
-   to a previously-uncalled endpoint.
+   Delete both work, dialog closes correctly → **Confirmed working** by
+   user ("flow worked fine").
 
 Remaining fully-unconfirmed items: 1, 2 (barcode persistence, nameless-
-product 400), 6, 8, 9. Item 7 has an ambiguous "working" confirmation.
+product 400), 6, 8. Item 7 has an ambiguous "working" confirmation.
 
 ## 4. Important file paths
 
