@@ -13,7 +13,7 @@ export async function lookupBarcode(barcode: string): Promise<BarcodeProduct | n
     if (upcRes.ok) {
       const data = await upcRes.json() as { items?: Array<{ title: string; brand: string; category: string; images: string[] }> };
       const item = data.items?.[0];
-      if (item) {
+      if (item?.title) {
         return {
           name: item.title,
           brand: item.brand,
@@ -30,7 +30,7 @@ export async function lookupBarcode(barcode: string): Promise<BarcodeProduct | n
     const offRes = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`);
     if (offRes.ok) {
       const data = await offRes.json() as { status: number; product?: { product_name: string; brands: string; categories_tags: string[]; image_url: string } };
-      if (data.status === 1 && data.product) {
+      if (data.status === 1 && data.product?.product_name) {
         return {
           name: data.product.product_name,
           brand: data.product.brands,

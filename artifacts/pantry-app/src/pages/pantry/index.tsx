@@ -59,7 +59,7 @@ export default function PantryPage() {
       const res = await fetch('/api/pantry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...data, idempotencyKey: addRequestId }),
+        body: JSON.stringify({ ...data, quantity: Number(data.quantity), idempotencyKey: addRequestId }),
       });
       const body = await res.json();
       // fetch() only rejects on network failure, not on 4xx/5xx — without
@@ -110,7 +110,17 @@ export default function PantryPage() {
                 <div className="space-y-3 pt-2">
                   <div className="space-y-1"><Label>Name *</Label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Chicken Breast" /></div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1"><Label>Quantity</Label><Input type="number" value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} /></div>
+                    <div className="space-y-1"><Label>Quantity</Label><Input
+                      type="text"
+                      inputMode="decimal"
+                      value={form.quantity}
+                      onChange={e => {
+                        const v = e.target.value;
+                        if (/^\d*\.?\d*$/.test(v)) {
+                          setForm(f => ({ ...f, quantity: v }));
+                        }
+                      }}
+                    /></div>
                     <div className="space-y-1"><Label>Unit</Label><Input value={form.unit} onChange={e => setForm(f => ({ ...f, unit: e.target.value }))} placeholder="e.g. lb, oz, count" /></div>
                   </div>
                   <div className="space-y-1"><Label>Brand</Label><Input value={form.brand} onChange={e => setForm(f => ({ ...f, brand: e.target.value }))} placeholder="Optional" /></div>

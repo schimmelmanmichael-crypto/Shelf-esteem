@@ -25,6 +25,10 @@ const pantryPostSchema = z.object({
   notes:         z.string().optional(),
   purchasePrice: z.number().optional().transform(v => v?.toString()),
   purchaseStore: z.string().optional(),
+  // Was missing — Zod strips unknown keys by default, so even after the
+  // scan.tsx fix, an incoming `barcode` field was silently discarded here
+  // before it ever reached the insert below.
+  barcode:       z.string().optional(),
 });
 
 // Zod schema for PATCH /pantry/:id — same whitelist as POST, every field optional
