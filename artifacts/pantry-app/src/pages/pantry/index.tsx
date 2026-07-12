@@ -47,6 +47,19 @@ export default function PantryPage() {
   // Item again after a failure without closing the dialog); refreshed each
   // time the dialog opens for a new attempt, and after a successful add.
   const [addRequestId, setAddRequestId] = useState(() => crypto.randomUUID());
+  const [editingItem, setEditingItem] = useState<PantryItem | null>(null);
+  const [editForm, setEditForm] = useState({ quantity: '', brand: '', category: 'other', storageArea: 'pantry', expiryDate: '' });
+
+  function openEdit(item: PantryItem) {
+    setEditingItem(item);
+    setEditForm({
+      quantity: item.quantity ?? '',
+      brand: item.brand ?? '',
+      category: item.category ?? 'other',
+      storageArea: item.storageArea ?? 'pantry',
+      expiryDate: item.expiryDate ?? '',
+    });
+  }
 
   const { data: items = [] } = useQuery<PantryItem[]>({
     queryKey: ['pantry'],
@@ -81,8 +94,47 @@ export default function PantryPage() {
   });
 
   const deleteItem = useMutation({
-    mutationFn: (id: string) => fetch(`/api/pantry/${id}`, { method: 'DELETE' }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['pantry'] }); toast.success('Item removed'); },
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/pantry/${id}`, { method: 'DELETE' });
+      // Same fetch()-doesn't-reject-on-4xx/5xx gap as addItem had — without
+      // this check a failed delete would still report "Item removed".
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? body.error ?? 'Failed to remove item');
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pantry'] });
+      toast.success('Item removed');
+      setEditingItem(null);
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to remove item'),
+  });
+
+  const updateItem = useMutation({
+    mutationFn: async () => {
+      if (!editingItem) throw new Error('No item to update');
+      const res = await fetch(`/api/pantry/${editingItem.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quantity: Number(editForm.quantity),
+          brand: editForm.brand,
+          category: editForm.category,
+          storageArea: editForm.storageArea,
+          expiryDate: editForm.expiryDate,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.message ?? body.error ?? 'Failed to update item');
+      return body;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pantry'] });
+      toast.success('Item updated');
+      setEditingItem(null);
+    },
+    onError: (err: Error) => toast.error(err.message || 'Failed to update item'),
   });
 
   const filtered = items.filter(item => {
@@ -151,6 +203,58 @@ export default function PantryPage() {
           </div>
         </div>
 
+        <Dialog open={!!editingItem} onOpenChange={(open) => { if (!open) setEditingItem(null); }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Edit {editingItem?.name}</DialogTitle></DialogHeader>
+            <div className="space-y-3 pt-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label>Quantity</Label>
+                  <Input
+                    type="text"
+                    inputMode="decimal"
+                    value={editForm.quantity}
+                    onFocus={e => e.target.select()}
+                    onChange={e => {
+                      const v = e.target.value;
+                      if (/^\d*\.?\d*$/.test(v)) {
+                        setEditForm(f => ({ ...f, quantity: v }));
+                      }
+                    }}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Storage</Label>
+                  <Select value={editForm.storageArea} onValueChange={v => setEditForm(f => ({ ...f, storageArea: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{['pantry','fridge','freezer','counter'].map(s => <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label>Category</Label>
+                <Select value={editForm.category} onValueChange={v => setEditForm(f => ({ ...f, category: v }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{['produce','dairy','proteins','grains','canned','frozen','other'].map(c => <SelectItem key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1"><Label>Brand</Label><Input value={editForm.brand} onChange={e => setEditForm(f => ({ ...f, brand: e.target.value }))} placeholder="Optional" /></div>
+              <div className="space-y-1"><Label>Expiry Date</Label><Input type="date" value={editForm.expiryDate} onChange={e => setEditForm(f => ({ ...f, expiryDate: e.target.value }))} /></div>
+              <Button className="w-full" disabled={updateItem.isPending} onClick={() => updateItem.mutate()}>
+                {updateItem.isPending ? 'Saving...' : 'Save'}
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full text-[var(--destructive)]"
+                disabled={deleteItem.isPending}
+                onClick={() => { if (editingItem) deleteItem.mutate(editingItem.id); }}
+              >
+                Delete Item
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {/* Filters */}
         <div className="space-y-2 mb-4">
           <div className="relative"><Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]" /><Input className="pl-9" placeholder="Search items..." value={search} onChange={e => setSearch(e.target.value)} /></div>
@@ -168,7 +272,11 @@ export default function PantryPage() {
           {filtered.map(item => {
             const status = expiryStatus(item.expiryDate);
             return (
-              <div key={item.id} className="flex items-center justify-between p-3 rounded-xl border border-[var(--border)] bg-[var(--card)]">
+              <div
+                key={item.id}
+                onClick={() => openEdit(item)}
+                className="flex items-center justify-between p-3 rounded-xl border border-[var(--border)] bg-[var(--card)] cursor-pointer hover:bg-[var(--muted)]/50"
+              >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium">{item.name}</span>
@@ -181,7 +289,7 @@ export default function PantryPage() {
                     {item.expiryDate && ` · exp. ${item.expiryDate}`}
                   </div>
                 </div>
-                <Button variant="ghost" size="sm" className="text-[var(--destructive)] shrink-0" onClick={() => deleteItem.mutate(item.id)}>Remove</Button>
+                <Button variant="ghost" size="sm" className="text-[var(--destructive)] shrink-0" onClick={e => { e.stopPropagation(); deleteItem.mutate(item.id); }}>Remove</Button>
               </div>
             );
           })}
