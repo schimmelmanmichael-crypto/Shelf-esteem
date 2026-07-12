@@ -8,8 +8,12 @@ the `pantry_items` table. Goal was to find every place the chain could
 break between "barcode decoded" and "row saved with the right data."
 
 Scope expanded over the session to also cover: camera scan speed/config,
-and a quantity-input bug that turned out to exist in both the scan
-confirm screen and the manual "Add Item" dialog.
+a quantity-input bug that turned out to exist in both the scan confirm
+screen and the manual "Add Item" dialog, three scanner UX requests
+(quantity auto-select, remember last camera, a Manual Entry tab), and
+finally a pantry item edit flow (tap an item to edit/delete it), which
+turned out to just need frontend wiring onto a backend endpoint that
+already existed.
 
 Full flow, in order:
 1. `artifacts/pantry-app/src/pages/pantry/scan.tsx` — camera scan (html5-qrcode)
@@ -105,6 +109,94 @@ Item" dialog (`pantry/index.tsx`).**
 item to check, since the analysis implied manual "Add Item" was 400ing on
 essentially every use before this fix.
 
+**Fix 6 — quantity fields don't auto-select on focus.** Added
+`onFocus={e => e.target.select()}` to both quantity inputs (`scan.tsx`
+confirm screen and `pantry/index.tsx` Add Item dialog), so tapping into
+the field highlights the existing value instead of requiring a manual
+delete first. Trivial once both fields were already `type="text"` (Fixes
+4/5) — `.select()` behaves consistently on text inputs, unlike the native
+`type="number"` input's inconsistent behavior that caused Fixes 4/5 in
+the first place.
+
+**Fix 7 — remembered camera choice was being wiped on every scanner
+open.** User asked for "remember selected camera between sessions,"
+expecting custom `localStorage` code. Investigation found
+`Html5QrcodeScanner` already ships this feature internally
+(`PersistedDataManager`, key `HTML5_QRCODE_DATA`) — it saves the chosen
+camera ID when Start is clicked and auto-restores it next render, gated
+behind a `rememberLastUsedCamera` config flag. Our config never set that
+flag, so the library's own constructor logic
+(`if (config.rememberLastUsedCamera !== true) { this.persistedDataManager.reset(); }`)
+was wiping the saved ID on every single construction. Fix was one line:
+`rememberLastUsedCamera: true` added to the scanner config in `scan.tsx`
+(~line 131). No custom persistence code needed or written.
+
+User later reported "not persisting" after this shipped. Hypothesis was
+that the scanner auto-starts on a single-camera device (true —
+`cameraSelectUi.hasSingleItem()` auto-clicks Start) so "there's nothing
+for the library to save." Traced the source further: that's not actually
+correct — the Start button's click handler calls
+`persistedDataManager.setLastUsedCameraId(cameraId)` unconditionally,
+whether the click was human or the library's own programmatic auto-click.
+The save side works either way. The more likely failure mode (not
+confirmed, no live device access): the *restore* side only re-applies a
+saved ID if `cameraSelectUi.hasValue(cameraId)` — i.e. the same device ID
+still appears in the current camera list — otherwise the library itself
+calls `resetLastUsedCameraId()`. Some mobile browsers rotate
+`MediaDeviceInfo.deviceId` per top-level session as a fingerprinting
+mitigation, which would defeat this regardless of our config. User
+reported back simply "working" without specifying which explanation it
+was — **treat as confirmed working for now**, but if it regresses, check
+devtools → Application → Local Storage → `HTML5_QRCODE_DATA` across a
+real close/reopen to see whether the saved ID itself survives or whether
+it's a device-ID-stability issue (which would need a different fix:
+remembering `facingMode` intent instead of a specific `deviceId`).
+
+**Fix 8 — Manual Entry tab.** User asked to "add a third tab between
+[Scan and Add Item] called Manual Entry," assuming a two-tab structure
+already existed. It didn't: `Scan` (`/pantry/scan`) and `Add Item` (a
+modal on `/pantry`) are on two different routes, not tabs on one screen,
+and there's no `Tabs` usage anywhere in the pantry/scan flow (there is a
+`components/ui/tabs.tsx` primitive, used elsewhere in the app — recipes,
+deals, etc.). Also, manual barcode entry already existed functionally on
+`scan.tsx` — an inline "or enter manually" section below the Start Camera
+button, calling the same `lookupBarcode()` the camera uses. So this Fix
+is a UI reorg, not new lookup logic: the `scan.tsx` idle-state layout was
+restructured into a real `Tabs` (`Scan` | `Manual Entry`), reusing the
+existing `manualBarcode` state and `lookupBarcode()` call as-is. `Add
+Item` was intentionally left alone as a separate modal on `/pantry` — a
+literal 3-tab bar spanning both routes was decided against.
+
+**Fixes 6-8 committed and pushed** as `8b6ca66` — not yet verified live.
+
+**Fix 9 — pantry item list was tap-dead; added an edit/delete flow.**
+User reported tapping a pantry item did nothing. Found the row (
+`pantry/index.tsx`, item `.map()`) was a plain `<div>` with no `onClick` —
+only its "Remove" button did anything. Checked the backend before
+building anything: `PATCH /api/pantry/:id` already existed, fully built
+(event-sourced, idempotent, RC2 canon reason-code logic), with a comment
+noting *"No UI calls this endpoint at all yet... added for API
+completeness/whenever an edit UI gets built."* So this was pure frontend
+wiring, no backend work needed:
+- New `editingItem`/`editForm` state; tapping a row calls `openEdit(item)`,
+  which pre-fills the form and opens a `Dialog` (matching the existing Add
+  Item dialog's component, not `Sheet`) with Quantity, Category, Storage,
+  Brand, Expiry Date — the five fields the user asked for (not
+  name/unit).
+- New `updateItem` mutation → `PATCH /api/pantry/:id`, `Number()`-coercing
+  quantity same as Fix 5.
+- A Delete button inside the dialog reuses the existing `deleteItem`
+  mutation; its `onSuccess` now also closes the dialog.
+- Along the way, found `deleteItem`'s `mutationFn` never checked
+  `res.ok` — the same fetch()-doesn't-reject-on-4xx/5xx class of bug as
+  the original `addItem` bug, meaning a failed delete (404, network
+  hiccup) would still toast "Item removed." User confirmed fixing this
+  too, since the new dialog's Delete button reuses this same mutation.
+- Remove button on the row gets `e.stopPropagation()` so it doesn't also
+  trigger the row's new `onClick`.
+
+**Committed and pushed as `c3222c0` — not yet verified live.**
+
 ## 3. Next step
 
 User has since verified some of this live in a running browser (outside
@@ -122,24 +214,44 @@ this session — this environment still has no `DATABASE_URL`). Status:
    **Confirmed working** by user. This was the highest-priority item
    (see Fix 5) since the analysis implied it was 400ing on essentially
    every use before the fix.
+6. Quantity auto-select on focus (scan.tsx + pantry/index.tsx) →
+   **Not yet confirmed.**
+7. Remembered camera choice across a real app close/reopen → user
+   reported "working" but didn't confirm which mechanism (see Fix 7
+   write-up) — **treat as working, but re-check via devtools localStorage
+   if it regresses.**
+8. Manual Entry tab on `/pantry/scan` → **Not yet confirmed** (reorg of
+   already-working lookup logic, so risk is low, but layout/tab-switching
+   itself hasn't been eyeballed).
+9. Pantry item edit flow — tap an item, edit fields, Save (PATCH) and
+   Delete both work, dialog closes correctly → **Not yet confirmed.**
+   Highest priority of the unconfirmed items since it's net-new UI wired
+   to a previously-uncalled endpoint.
 
-Remaining open items are 1 and 2 — the barcode-persistence save and the
-nameless-product-match 400 fix, neither of which has been exercised live
-yet.
+Remaining fully-unconfirmed items: 1, 2 (barcode persistence, nameless-
+product 400), 6, 8, 9. Item 7 has an ambiguous "working" confirmation.
 
 ## 4. Important file paths
 
 - `artifacts/pantry-app/src/pages/pantry/scan.tsx` — scanner UI
-  (`Html5QrcodeScanner` config ~line 116-154), lookup call, confirm screen
-  (Quantity input ~line 325-334), save mutation (~line 62-88)
+  (`Html5QrcodeScanner` config incl. `rememberLastUsedCamera`), lookup
+  call, idle state now a `Tabs` (Scan | Manual Entry) instead of a
+  stacked layout, confirm screen (Quantity input with auto-select), save
+  mutation
 - `artifacts/pantry-app/src/pages/pantry/index.tsx` — manual "Add Item"
-  dialog (Quantity input ~line 113-122), `addItem` mutation (~line 57-62,
-  triggered via `addItem.mutate(form)` ~line 134)
+  dialog (Quantity input with auto-select), `addItem` mutation; pantry
+  item list row now has `onClick={() => openEdit(item)}`; new Edit
+  dialog (`editingItem`/`editForm` state, `openEdit()`) with `updateItem`
+  mutation (`PATCH /api/pantry/:id`) and a Delete button reusing
+  `deleteItem` (now with a proper `res.ok` check)
 - `artifacts/pantry-app/src/pages/inventory/index.tsx` — displays
   `item.barcode` in the pantry list (line ~35)
 - `artifacts/api-server/src/routes/pantry.ts` — `pantryPostSchema` (~line 17),
-  `POST /` handler (~line 55), `GET /barcode/:barcode` (unused/orphaned —
-  no frontend caller), `GET /external-barcode/:barcode`
+  `POST /` handler (~line 55), `pantryPatchSchema` (line 35, `.partial()`
+  of the post schema), `PATCH /:id` handler (line 141, event-sourced
+  reconcile logic, now finally called by the pantry item edit dialog as
+  of Fix 9), `DELETE /:id` handler (line 245), `GET /barcode/:barcode`
+  (unused/orphaned — no frontend caller), `GET /external-barcode/:barcode`
 - `artifacts/api-server/src/lib/barcodeService.ts` — `lookupBarcode()`,
   external API calls (UPCItemDB line 16, Open Food Facts line 33)
 - `artifacts/api-server/src/app.ts` — Express app setup, confirms
@@ -216,6 +328,21 @@ at all (`{ ...data, idempotencyKey: addRequestId }`, no `Number()`
 anywhere), unlike `scan.tsx` which already did this at its send site. Not
 something the user asked about directly — surfaced by reading the full
 send path rather than only patching the reported symptom.
+
+**Error 5 (resolved, ambiguous confirmation): remembered camera not
+persisting across sessions, after Fix 7 shipped.**
+User supplied their own hypothesis (auto-start on single-camera devices
+means "nothing to save"). Rather than building a fix on top of an
+unverified hypothesis, read the library's actual click-handler and
+camera-list-render code paths to check it against source. Found the
+hypothesis's conclusion didn't hold — the save call fires regardless of
+auto vs. manual start — but surfaced a more plausible real mechanism
+(device ID instability across browser sessions on the restore side) that
+static reading alone couldn't confirm or rule out. Proposed a concrete
+devtools check (compare `HTML5_QRCODE_DATA` in Local Storage before/after
+a real close-reopen) rather than guessing at a fix. User replied "working"
+without saying which explanation applied — logged as resolved-but-
+ambiguous rather than assumed confirmed, see Fix 7 and Next Step item 7.
 
 **Note on request hygiene this session:** two user messages turned out to
 be paste mix-ups unrelated to the actual codebase — a line referencing
