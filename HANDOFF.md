@@ -86,6 +86,8 @@ switched the Quantity input from `type="number"` to `type="text"` +
 `inputMode="decimal"`, with a regex guard (`/^\d*\.?\d*$/`) replacing the
 browser's native filtering.
 
+**Verified live in browser by user — works.**
+
 **Fix 5 — same quantity bug, plus a more severe one, in the manual "Add
 Item" dialog (`pantry/index.tsx`).**
 - Same input fix as Fix 4, applied to `pantry/index.tsx` ~line 113.
@@ -98,27 +100,32 @@ Item" dialog (`pantry/index.tsx`).**
   *every* submission, which should fail validation regardless of the
   decimal-input issue. Fixed by changing the POST body to
   `{ ...data, quantity: Number(data.quantity), idempotencyKey: addRequestId }`.
-  **This is the highest-priority thing to verify live** — if the analysis
-  is right, manual "Add Item" was 400ing on essentially every use before
-  this fix.
+
+**Verified live in browser by user — works.** This was the highest-priority
+item to check, since the analysis implied manual "Add Item" was 400ing on
+essentially every use before this fix.
 
 ## 3. Next step
 
-Nothing left diagnosed-but-unfixed. Everything in Section 2 needs a real
-browser pass against a running server (`DATABASE_URL` not available in
-this environment):
+User has since verified some of this live in a running browser (outside
+this session — this environment still has no `DATABASE_URL`). Status:
 1. Scan a real barcode → confirm the item saves with the barcode field
-   populated (Fix 1).
+   populated (Fix 1). **Not yet confirmed.**
 2. Find or fake a barcode that resolves to a nameless Open Food
    Facts/UPCItemDB record → confirm it now falls into "not found — add
-   manually" instead of 400ing (Fix 2).
-3. Time a few scans → see whether the 1280x720 target actually reads
-   faster than the old 1920x1080 target (Fix 3) — this was never
-   empirically confirmed, only reasoned about.
-4. On the scan confirm screen, type `.5` into Quantity → confirm it's
-   accepted and saves correctly (Fix 4).
-5. Open manual "Add Item," fill in any quantity (not just `.5`) → confirm
-   it saves without a 400 (Fix 5 — highest priority, see above).
+   manually" instead of 400ing (Fix 2). **Not yet confirmed.**
+3. Scanner responsiveness with the 1280x720 target — user reported
+   "scanner is working." **Confirmed working**, though no side-by-side
+   timing vs. the old 1920x1080 target was done.
+4. Scan confirm screen, quantity `.5` → **Confirmed working** by user.
+5. Manual "Add Item" dialog, quantity (any value, including `.5`) →
+   **Confirmed working** by user. This was the highest-priority item
+   (see Fix 5) since the analysis implied it was 400ing on essentially
+   every use before the fix.
+
+Remaining open items are 1 and 2 — the barcode-persistence save and the
+nameless-product-match 400 fix, neither of which has been exercised live
+yet.
 
 ## 4. Important file paths
 

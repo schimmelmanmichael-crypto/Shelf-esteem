@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
 // Shape returned by GET /api/pantry/external-barcode/:barcode (see
 // barcodeService.ts). `barcode` is added on our side after the fetch so the
@@ -122,6 +123,12 @@ export default function ScanPage() {
             // left/right edges off the barcode before the decoder ever
             // sees a complete symbol, independent of resolution.
             qrbox: { width: 300, height: 150 },
+            // Without this, Html5QrcodeScanner's own persistedDataManager
+            // resets its saved camera ID on every construction (its default
+            // "remember" behavior only kicks in when this flag is passed
+            // explicitly), so the camera picker would reset every time this
+            // screen opens.
+            rememberLastUsedCamera: true,
             // Narrow the decoder to retail formats only. Without this it
             // searches every format (QR, all 1D/2D types) on every frame —
             // slower and more error-prone.
@@ -324,6 +331,7 @@ export default function ScanPage() {
                   type="text"
                   inputMode="decimal"
                   value={confirmForm.quantity}
+                  onFocus={e => e.target.select()}
                   onChange={e => {
                     const v = e.target.value;
                     if (/^\d*\.?\d*$/.test(v)) {
@@ -361,24 +369,30 @@ export default function ScanPage() {
             </div>
           </div>
         ) : !scanning ? (
-          <div className="text-center space-y-6">
-            <div className="text-6xl">📷</div>
-            <p className="text-[var(--muted-foreground)]">Point your camera at any product barcode to look it up automatically.</p>
-            <Button className="w-full" size="lg" onClick={() => setScanning(true)}>
-              Start Camera
-            </Button>
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-[var(--border)]" /></div>
-              <div className="relative flex justify-center text-xs uppercase"><span className="bg-[var(--background)] px-2 text-[var(--muted-foreground)]">or enter manually</span></div>
-            </div>
-            <div className="space-y-2">
-              <Label>Barcode number</Label>
-              <div className="flex gap-2">
-                <Input value={manualBarcode} onChange={e => setManualBarcode(e.target.value)} placeholder="e.g. 012345678901" />
-                <Button disabled={!manualBarcode} onClick={() => lookupBarcode(manualBarcode)}>Look Up</Button>
+          <Tabs defaultValue="scan">
+            <TabsList className="w-full mb-4">
+              <TabsTrigger value="scan" className="flex-1">Scan</TabsTrigger>
+              <TabsTrigger value="manual" className="flex-1">Manual Entry</TabsTrigger>
+            </TabsList>
+            <TabsContent value="scan">
+              <div className="text-center space-y-6">
+                <div className="text-6xl">📷</div>
+                <p className="text-[var(--muted-foreground)]">Point your camera at any product barcode to look it up automatically.</p>
+                <Button className="w-full" size="lg" onClick={() => setScanning(true)}>
+                  Start Camera
+                </Button>
               </div>
-            </div>
-          </div>
+            </TabsContent>
+            <TabsContent value="manual">
+              <div className="space-y-2">
+                <Label>Barcode number</Label>
+                <div className="flex gap-2">
+                  <Input value={manualBarcode} onChange={e => setManualBarcode(e.target.value)} placeholder="e.g. 012345678901" />
+                  <Button disabled={!manualBarcode} onClick={() => lookupBarcode(manualBarcode)}>Look Up</Button>
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
         ) : (
           <div>
             <div id="barcode-scanner" ref={videoRef} className="rounded-xl overflow-hidden" />

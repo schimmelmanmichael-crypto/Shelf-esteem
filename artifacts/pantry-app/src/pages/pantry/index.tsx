@@ -114,6 +114,7 @@ export default function PantryPage() {
                       type="text"
                       inputMode="decimal"
                       value={form.quantity}
+                      onFocus={e => e.target.select()}
                       onChange={e => {
                         const v = e.target.value;
                         if (/^\d*\.?\d*$/.test(v)) {
